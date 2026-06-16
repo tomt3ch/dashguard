@@ -1,4 +1,4 @@
-const CACHE = 'dashguard-v8';
+const CACHE = 'dashguard-v8-debugbutton';
 
 // App shell — cached at install time
 const APP_SHELL = [
