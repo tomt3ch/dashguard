@@ -370,11 +370,11 @@ const CFG = {
   OSM_REFRESH_M:     150,
   ALERT_MAX_FT:      2500,   // alert up to 2500ft ahead (~760m, matches OSM radius)
   ALERT_MIN_FT:      8,
-  HEADING_CONE_DEG:  40,     // tightened from 65 — only alerts for signs clearly ahead
+  HEADING_CONE_DEG:  30,     // tight cone — only signs clearly straight ahead
   HEADING_MIN_MPH:   5,
-  BRACKETS_FT:       [500,300,100,50],  // fewer brackets = fewer interruptions
-  BRACKET_WIN_FT:    50,    // wider window so each bracket only fires once
-  SPEAK_COOLDOWN_MS: 12000, // 12s cooldown per bracket — won't interrupt itself
+  BRACKETS_FT:       [500,400,300,200,100,50],  // even number brackets
+  BRACKET_WIN_FT:    55,    // wide enough to catch each bracket once
+  SPEAK_COOLDOWN_MS: 10000, // 10s per bracket
   CAM_CONF_MIN:      0.40,
   STOP_W_CM:         76.2,
   LIGHT_H_CM:        114,
@@ -932,20 +932,41 @@ async function fetchOSMNodes(lat, lon) {
 function evaluateMapAlerts() {
   if (!gpsPos||!mapEnabled) return;
   const {lat,lon,heading,speedMph}=gpsPos;
+
+  // Look-ahead compensation: at speed, GPS position is already stale by the time
+  // audio finishes playing. Compensate by shifting the effective position forward.
+  // TTS fires + speaks in roughly 2 seconds. At 30mph = 44fps → ~88ft look-ahead.
+  const speedFps   = speedMph * 1.467;       // mph → ft/sec
+  const lookAheadFt = speedFps * 2.0;        // 2 second look-ahead
+  const lookAheadM  = lookAheadFt * CFG.M_PER_FT;
+
+  // Shift GPS position forward along heading for distance calculations
+  let effLat = lat, effLon = lon;
+  if (heading != null && lookAheadM > 5) {
+    const R   = 6371000;
+    const hdgR = heading * Math.PI / 180;
+    effLat = lat + (lookAheadM / R) * (180 / Math.PI) * Math.cos(hdgR);
+    effLon = lon + (lookAheadM / R) * (180 / Math.PI) * Math.sin(hdgR) / Math.cos(lat * Math.PI / 180);
+  }
+
   const hits=[];
   for (const node of osmNodes) {
-    const distFt=haversineM(lat,lon,node.lat,node.lon)/CFG.M_PER_FT;
-    if (distFt>CFG.ALERT_MAX_FT||distFt<CFG.ALERT_MIN_FT) continue;
-    if (heading!=null&&speedMph>=CFG.HEADING_MIN_MPH) {
-      const diff=angleDiff(bearingDeg(lat,lon,node.lat,node.lon),heading);
-      if (Math.abs(diff)>CFG.HEADING_CONE_DEG) continue;
+    // Use look-ahead position for distance
+    const distFt = haversineM(effLat, effLon, node.lat, node.lon) / CFG.M_PER_FT;
+    if (distFt > CFG.ALERT_MAX_FT || distFt < CFG.ALERT_MIN_FT) continue;
+
+    if (heading != null && speedMph >= CFG.HEADING_MIN_MPH) {
+      const bearing = bearingDeg(lat, lon, node.lat, node.lon);
+      const diff    = angleDiff(bearing, heading);
+      if (Math.abs(diff) > CFG.HEADING_CONE_DEG) continue;
     }
+
     hits.push({type:node.type, distFt:Math.round(distFt), nodeId:node.id, source:'map'});
   }
   hits.sort((a,b)=>a.distFt-b.distFt);
   lastMapHits=hits;
   mergeAndRender();
-  dbg(`Map:${hits.length} hdg:${heading!=null?Math.round(heading)+'°':'off'} nodes:${osmNodes.length}`);
+  dbg(`Map:${hits.length} hdg:${heading!=null?Math.round(heading)+'°':'off'} spd:${Math.round(speedMph)}mph la:${Math.round(lookAheadFt)}ft`);
 }
 
 // ═══════════════════════════════════
@@ -1006,27 +1027,31 @@ function renderAlertCards(alerts) {
 //  VOICE
 // ═══════════════════════════════════
 function triggerVoiceAlerts(alerts) {
-  // Don't interrupt if already speaking
   if (speechSynthesis.speaking) return;
   for (const a of alerts) {
-    const bracket=nearestBracket(a.distFt);
-    if (bracket===null) continue;
-    const key=`${a.type}-${a.nodeId||'cam'}-${bracket}`;
-    const now=Date.now();
-    if (lastSpoken[key]&&now-lastSpoken[key]<CFG.SPEAK_COOLDOWN_MS) continue;
-    lastSpoken[key]=now;
+    const bracket = nearestBracket(a.distFt);
+    if (bracket === null) continue;
+    const key = `${a.type}-${a.nodeId||'cam'}-${bracket}`;
+    const now = Date.now();
+    if (lastSpoken[key] && now - lastSpoken[key] < CFG.SPEAK_COOLDOWN_MS) continue;
+    lastSpoken[key] = now;
     speak(buildUtterance(a));
     break;
   }
 }
+
+function roundToEven(ft) {
+  // Above 200ft: round to nearest 100. Below: round to nearest 50.
+  if (ft >= 200) return Math.round(ft / 100) * 100;
+  return Math.round(ft / 50) * 50;
+}
+
 function buildUtterance(a) {
-  const ft  = Math.round(a.distFt);
-  const word = a.type==='stop' ? 'Stop' : 'Signal';
-  // Short, punchy — no long phrases that get cut off
-  if (ft >= 400) return `${word}, ${ft} feet.`;
-  if (ft >= 150) return `${word}, ${ft} feet.`;
-  if (ft >= 55)  return `${word}, ${ft} feet.`;
-  return a.type==='stop' ? 'Stop sign.' : 'Signal ahead.';
+  const ft   = roundToEven(Math.round(a.distFt));
+  const word = a.type === 'stop' ? 'Stop' : 'Signal';
+  if (ft <= 100 && a.type === 'stop') return 'Do not roll through the stop sign.';
+  if (ft >= 50) return `${word}, ${ft} feet.`;
+  return a.type === 'stop' ? 'Stop.' : 'Signal.';
 }
 // ═══════════════════════════════════
 //  VOICE — Web Speech API (device TTS, no internet)
