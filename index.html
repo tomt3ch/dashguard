@@ -699,6 +699,11 @@ function processCamPredictions(preds) {
   lastCamHits = hits;
   mergeAndRender();
 }
+
+// ═══════════════════════════════════
+//  CAMERA
+// ═══════════════════════════════════
+async function startCamera(deviceId) {
   if (videoStream) stopCamera();
   try {
     const video = deviceId
