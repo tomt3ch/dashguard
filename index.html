@@ -213,11 +213,11 @@
     </div>
     <div id="alert-wrap"></div>
     <div id="debug" class="hidden"></div>
-    <svg id="heading-ring" viewBox="0 0 52 52">
+    <svg id="heading-ring" viewBox="0 0 52 52" onclick="toggleHeadingMode()" style="cursor:pointer;">
       <circle cx="26" cy="26" r="23" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="1"/>
       <path id="cone-path" fill="rgba(55,138,221,.2)" stroke="rgba(55,138,221,.5)" stroke-width=".5"/>
       <circle cx="26" cy="26" r="3" fill="var(--blue)"/>
-      <text x="26" y="9" text-anchor="middle" font-size="7" fill="rgba(255,255,255,.4)">N</text>
+      <text id="ring-label" x="26" y="9" text-anchor="middle" font-size="7" fill="rgba(255,255,255,.4)">N</text>
     </svg>
   </div>
   <div id="bottom">
@@ -370,11 +370,11 @@ const CFG = {
   OSM_REFRESH_M:     150,
   ALERT_MAX_FT:      2500,   // alert up to 2500ft ahead (~760m, matches OSM radius)
   ALERT_MIN_FT:      8,
-  HEADING_CONE_DEG:  65,
+  HEADING_CONE_DEG:  40,     // tightened from 65 — only alerts for signs clearly ahead
   HEADING_MIN_MPH:   5,
-  BRACKETS_FT:       [500,400,300,200,150,100,50],
-  BRACKET_WIN_FT:    30,
-  SPEAK_COOLDOWN_MS: 8000,
+  BRACKETS_FT:       [500,300,100,50],  // fewer brackets = fewer interruptions
+  BRACKET_WIN_FT:    50,    // wider window so each bracket only fires once
+  SPEAK_COOLDOWN_MS: 12000, // 12s cooldown per bracket — won't interrupt itself
   CAM_CONF_MIN:      0.40,
   STOP_W_CM:         76.2,
   LIGHT_H_CM:        114,
@@ -394,6 +394,7 @@ let tfModel=null, videoStream=null, detecting=false, rafId=null;
 let muted=false, mapEnabled=true, camEnabled=true;
 let panelOpen=false, activeTab='status';
 let tapCount=0, tapTimer=null, debugOpen=false;
+let headingUp=false; // false=north-up, true=heading-up
 let selectedDeviceId=null, availableLenses=[];
 let gpsPos=null, lastQueryPos=null, gpsWatchId=null, compassHeading=null;
 let osmNodes=[], osmFetchedAt=null;
@@ -1005,6 +1006,8 @@ function renderAlertCards(alerts) {
 //  VOICE
 // ═══════════════════════════════════
 function triggerVoiceAlerts(alerts) {
+  // Don't interrupt if already speaking
+  if (speechSynthesis.speaking) return;
   for (const a of alerts) {
     const bracket=nearestBracket(a.distFt);
     if (bracket===null) continue;
@@ -1017,12 +1020,13 @@ function triggerVoiceAlerts(alerts) {
   }
 }
 function buildUtterance(a) {
-  const ft=Math.round(a.distFt), type=a.type==='stop'?'stop sign':'traffic signal';
-  if (ft>=450) return `${type} ahead, ${ft} feet.`;
-  if (ft>=280) return `${type}, ${ft} feet.`;
-  if (ft>=130) return `${type} approaching, ${ft} feet. Prepare to stop.`;
-  if (ft>=55)  return `${type}, ${ft} feet.`;
-  return a.type==='stop'?'Stop sign. Please do not roll through.':'Traffic signal. Watch the light.';
+  const ft  = Math.round(a.distFt);
+  const word = a.type==='stop' ? 'Stop' : 'Signal';
+  // Short, punchy — no long phrases that get cut off
+  if (ft >= 400) return `${word}, ${ft} feet.`;
+  if (ft >= 150) return `${word}, ${ft} feet.`;
+  if (ft >= 55)  return `${word}, ${ft} feet.`;
+  return a.type==='stop' ? 'Stop sign.' : 'Signal ahead.';
 }
 // ═══════════════════════════════════
 //  VOICE — Web Speech API (device TTS, no internet)
@@ -1077,9 +1081,10 @@ function testAudio() {
 
 function speak(text) {
   if (muted || !window.speechSynthesis) return;
-  speechSynthesis.cancel();
+  // Never cancel mid-speech — let current phrase finish
+  if (speechSynthesis.speaking) return;
   const u = new SpeechSynthesisUtterance(text);
-  u.rate = 0.92; u.pitch = 1.0; u.volume = 1.0;
+  u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
   const en = speechSynthesis.getVoices().find(v=>v.lang.startsWith('en')&&v.localService);
   if (en) u.voice = en;
   speechSynthesis.speak(u);
@@ -1356,21 +1361,52 @@ function updateStatusPanel() {
 // ═══════════════════════════════════
 //  HEADING CONE
 // ═══════════════════════════════════
+function toggleHeadingMode() {
+  headingUp = !headingUp;
+  // Update label: north-up shows N, heading-up shows arrow
+  document.getElementById('ring-label').textContent = headingUp ? '▲' : 'N';
+  if (gpsPos) updateCone(gpsPos.heading);
+}
+
 function updateCone(hdg) {
-  const cx=26,cy=26,r=20;
-  if (hdg==null) {
+  const cx=26, cy=26, r=20;
+  const ringEl = document.getElementById('heading-ring');
+
+  if (hdg == null) {
+    // No heading — full amber circle
     conePath.setAttribute('d',`M${cx-r},${cy} A${r},${r} 0 1,1 ${cx+r},${cy} A${r},${r} 0 1,1 ${cx-r},${cy}`);
     conePath.setAttribute('fill','rgba(239,159,39,.15)');
     conePath.setAttribute('stroke','rgba(239,159,39,.4)');
+    ringEl.style.transform = '';
     return;
   }
+
   conePath.setAttribute('fill','rgba(55,138,221,.2)');
   conePath.setAttribute('stroke','rgba(55,138,221,.5)');
-  const base=hdg-90, half=CFG.HEADING_CONE_DEG;
-  const a1=(base-half)*Math.PI/180, a2=(base+half)*Math.PI/180;
-  const x1=cx+r*Math.cos(a1),y1=cy+r*Math.sin(a1);
-  const x2=cx+r*Math.cos(a2),y2=cy+r*Math.sin(a2);
-  conePath.setAttribute('d',`M${cx},${cy} L${x1},${y1} A${r},${r} 0 0,1 ${x2},${y2} Z`);
+
+  if (headingUp) {
+    // Heading-up: cone always points to 12 o'clock, rotate the whole ring
+    // so North appears at (360-hdg) degrees from top
+    ringEl.style.transform = `rotate(${-hdg}deg)`;
+    ringEl.style.transformOrigin = '50% 50%';
+    // Cone always points up (north in ring coords = top = 0°)
+    const half = CFG.HEADING_CONE_DEG;
+    const a1 = (-90 - half) * Math.PI/180;
+    const a2 = (-90 + half) * Math.PI/180;
+    const x1=cx+r*Math.cos(a1), y1=cy+r*Math.sin(a1);
+    const x2=cx+r*Math.cos(a2), y2=cy+r*Math.sin(a2);
+    conePath.setAttribute('d',`M${cx},${cy} L${x1},${y1} A${r},${r} 0 0,1 ${x2},${y2} Z`);
+  } else {
+    // North-up: ring stays fixed, cone rotates to show travel direction
+    ringEl.style.transform = '';
+    const base = hdg - 90;
+    const half = CFG.HEADING_CONE_DEG;
+    const a1 = (base - half) * Math.PI/180;
+    const a2 = (base + half) * Math.PI/180;
+    const x1=cx+r*Math.cos(a1), y1=cy+r*Math.sin(a1);
+    const x2=cx+r*Math.cos(a2), y2=cy+r*Math.sin(a2);
+    conePath.setAttribute('d',`M${cx},${cy} L${x1},${y1} A${r},${r} 0 0,1 ${x2},${y2} Z`);
+  }
 }
 
 // ═══════════════════════════════════
