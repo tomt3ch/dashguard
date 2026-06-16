@@ -661,34 +661,57 @@ async function enumerateLenses() {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const cams    = devices.filter(d => d.kind === 'videoinput');
 
-    // Parse zoom level from iOS label e.g. "Back Ultra Wide Camera", "Back Camera", "Back Telephoto Camera 2x"
-    availableLenses = cams.map(d => {
-      const lbl = d.label || '';
-      let zoom  = 1;
-      let name  = '1x';
-      const isFront = /front/i.test(lbl);
-      if (isFront) { return null; } // skip front camera
-      if (/ultra\s*wide|0\.5/i.test(lbl)) { zoom = 0.5; name = '0.5x'; }
-      else if (/telephoto.*3x|3\s*x/i.test(lbl))  { zoom = 3; name = '3x'; }
-      else if (/telephoto.*2x|2\s*x/i.test(lbl))  { zoom = 2; name = '2x'; }
-      else if (/telephoto.*5x|5\s*x/i.test(lbl))  { zoom = 5; name = '5x'; }
-      else if (/telephoto/i.test(lbl))             { zoom = 2; name = '2x'; }
-      const focalPx = LENS_FOCAL[zoom] || 700;
-      return { deviceId: d.deviceId, label: lbl, zoom, name, focalPx };
-    }).filter(Boolean);
+    // Separate front/rear by label
+    const rear  = cams.filter(d => !/front|facing/i.test(d.label));
+    const front = cams.filter(d => /front|facing/i.test(d.label));
 
-    // If labels are blank (privacy mode before permission granted), fall back to index-based naming
-    if (availableLenses.length === 0) {
-      const rearCams = cams.filter(d => !/front/i.test(d.label));
-      availableLenses = rearCams.map((d, i) => ({
-        deviceId: d.deviceId,
-        label: d.label || `Rear camera ${i+1}`,
-        zoom: i === 0 ? 1 : i,
-        name: i === 0 ? '1x' : `${i}x`,
-        focalPx: LENS_FOCAL[i === 0 ? 1 : i] || 700,
-      }));
+    // iOS camera labels when permission granted:
+    //   "Back Triple Camera"  → one device representing all three (useless for switching)
+    //   "Back Ultra Wide Camera", "Back Camera", "Back Telephoto Camera" → individual lenses
+    //   "Back Dual Wide Camera", "Back Dual Camera" → combo devices
+    // We want only the individual physical lenses, not combo/triple devices.
+    const individual = rear.filter(d => !/triple|dual|combo/i.test(d.label));
+    const workingSet = individual.length > 0 ? individual : rear;
+
+    availableLenses = workingSet.map((d, idx) => {
+      const lbl = d.label || '';
+      let zoom = 1, name = '1x', focalPx = 700;
+
+      if (/ultra\s*wide|0\.5x/i.test(lbl))             { zoom = 0.5; name = '0.5x'; focalPx = 350; }
+      else if (/5\s*x|5x/i.test(lbl))                  { zoom = 5;   name = '5x';   focalPx = 2200; }
+      else if (/3\s*x|3x/i.test(lbl))                  { zoom = 3;   name = '3x';   focalPx = 1500; }
+      else if (/2\s*x|2x/i.test(lbl))                  { zoom = 2;   name = '2x';   focalPx = 1100; }
+      else if (/telephoto/i.test(lbl))                  { zoom = 2;   name = '2x';   focalPx = 1100; }
+      else if (/wide|back camera$/i.test(lbl) || !lbl) { zoom = 1;   name = '1x';   focalPx = 700;  }
+      else {
+        // Unknown — assign zoom by sorted position (ultrawide=0.5, main=1, tele=2/3)
+        // iOS sorts them ultrawide → wide → telephoto
+        const zoomByIdx = [0.5, 1, 2, 3, 5];
+        zoom = zoomByIdx[idx] ?? 1;
+        name = `${zoom}x`;
+        focalPx = LENS_FOCAL[zoom] || 700;
+      }
+
+      return { deviceId: d.deviceId, label: lbl || `Camera ${idx+1}`, zoom, name, focalPx };
+    });
+
+    // Deduplicate by zoom level — keep first occurrence (iOS sometimes lists duplicates)
+    const seen = new Set();
+    availableLenses = availableLenses.filter(l => {
+      if (seen.has(l.name)) return false;
+      seen.add(l.name);
+      return true;
+    });
+
+    // Sort by zoom level ascending
+    availableLenses.sort((a, b) => a.zoom - b.zoom);
+
+    // If we still ended up with nothing useful, offer a single manual option
+    if (availableLenses.length === 0 && cams.length > 0) {
+      availableLenses = [{ deviceId: cams[0].deviceId, label: 'Default camera', zoom: 1, name: '1x', focalPx: 700 }];
     }
 
+    dbg(`Lenses: ${availableLenses.map(l=>l.name+'('+l.deviceId.slice(0,6)+')').join(', ')}`);
     renderLensGrid();
   } catch(e) {
     console.warn('enumerateLenses:', e);
@@ -1026,15 +1049,23 @@ async function downloadRegion() {
   try {
     // Step 1: Nominatim lookup → bounding box
     const q    = county ? `${county}, ${state}, USA` : `${state}, USA`;
-    const nUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=3&featuretype=${county?'county':'state'}`;
-    const nRes = await fetch(nUrl, { headers:{ 'Accept-Language':'en' } });
-    const nJson= await nRes.json();
+    const nUrl = `https://nominatim.openstreetmap.org/search`
+               + `?q=${encodeURIComponent(q)}&format=json&limit=5&addressdetails=1`;
+    const nRes = await fetch(nUrl, { headers: { 'Accept-Language': 'en', 'User-Agent': 'DashGuard/1.0' } });
+    if (!nRes.ok) throw new Error(`Nominatim HTTP ${nRes.status}`);
+    const nJson = await nRes.json();
 
-    // Pick best result: prefer boundary/administrative
-    const best = nJson.find(r => r.type==='administrative'||r.type==='county'||r.type==='state')
-               || nJson[0];
+    // Pick best result: prefer county/state admin boundaries over points
+    const ADMIN_TYPES = ['administrative','county','state','province','municipality'];
+    const best = nJson.find(r => ADMIN_TYPES.includes(r.type) && r.boundingbox)
+              || nJson.find(r => r.boundingbox)
+              || nJson[0];
 
-    if (!best) { setProgress(`Could not find "${label}". Check spelling.`); btn.disabled=false; return; }
+    if (!best || !best.boundingbox) {
+      setProgress(`Could not find "${label}". Try adding ", USA" or check spelling.`);
+      btn.disabled = false;
+      return;
+    }
 
     const [minlat,maxlat,minlon,maxlon] = best.boundingbox.map(Number);
     const bbox = { minlat, maxlat, minlon, maxlon };
@@ -1074,34 +1105,50 @@ async function downloadBBox(bbox, label, onProgress) {
   const { minlat, maxlat, minlon, maxlon } = bbox;
   const chunk = CFG.OVERPASS_CHUNK_DEG;
 
-  // Build grid of chunks
+  // Build grid of chunks — toFixed(6) prevents scientific notation in coords
   const latSteps = [], lonSteps = [];
   for (let lat = minlat; lat < maxlat; lat += chunk)
-    latSteps.push([lat, Math.min(lat+chunk, maxlat)]);
+    latSteps.push([lat, Math.min(lat + chunk, maxlat)]);
   for (let lon = minlon; lon < maxlon; lon += chunk)
-    lonSteps.push([lon, Math.min(lon+chunk, maxlon)]);
+    lonSteps.push([lon, Math.min(lon + chunk, maxlon)]);
 
   const totalChunks = latSteps.length * lonSteps.length;
   let done = 0;
-  const allNodes = new Map(); // dedup by id
+  const allNodes = new Map();
 
-  for (const [la1,la2] of latSteps) {
-    for (const [lo1,lo2] of lonSteps) {
-      const q = `[out:json][timeout:25];(node["highway"="stop"](${la1},${lo1},${la2},${lo2});node["highway"="traffic_signals"](${la1},${lo1},${la2},${lo2});node["highway"="give_way"](${la1},${lo1},${la2},${lo2}););out body;`;
+  for (const [la1, la2] of latSteps) {
+    for (const [lo1, lo2] of lonSteps) {
+      // Format coords to 6 decimal places — avoids scientific notation breaking Overpass
+      const s = [la1,lo1,la2,lo2].map(n => n.toFixed(6)).join(',');
+      const q = `[out:json][timeout:28];(`
+        + `node["highway"="stop"](${s});`
+        + `node["highway"="traffic_signals"](${s});`
+        + `node["highway"="give_way"](${s});`
+        + `);out body;`;
+
       try {
-        const res  = await fetch('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q));
+        const res  = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'data=' + encodeURIComponent(q),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
-        for (const el of json.elements) allNodes.set(el.id, toNode(el));
+        if (json.elements) {
+          for (const el of json.elements) allNodes.set(el.id, toNode(el));
+        }
       } catch(e) {
-        console.warn('Chunk failed, skipping:', e.message);
+        console.warn(`Chunk ${done+1}/${totalChunks} failed:`, e.message);
+        // Continue — partial data is better than nothing
       }
+
       done++;
       onProgress(done / totalChunks);
-      setProgress(`Downloading ${label}… chunk ${done}/${totalChunks} (${allNodes.size.toLocaleString()} nodes)`);
-      // Small delay to be polite to Overpass
-      if (done < totalChunks) await sleep(300);
+      setProgress(`Downloading ${label}… ${done}/${totalChunks} chunks · ${allNodes.size.toLocaleString()} signs found`);
+      if (done < totalChunks) await sleep(350);
     }
   }
+
   return Array.from(allNodes.values());
 }
 
@@ -1109,37 +1156,40 @@ async function downloadBBox(bbox, label, onProgress) {
 //  RADIUS DOWNLOAD (around current position)
 // ═══════════════════════════════════════════════════
 async function downloadRadius(km) {
-  if (!gpsPos) { alert('GPS required. Wait for GPS lock.'); return; }
-  if (!db)     { alert('Local storage unavailable.'); return; }
-  if (!panelOpen) return;
+  if (!gpsPos) { setProgress('GPS not locked yet — wait a moment and try again.'); switchTab('cache'); return; }
+  if (!db)     { setProgress('Local storage unavailable.'); return; }
 
   const { lat, lon } = gpsPos;
   const dlat = km / 111;
   const dlon = km / (111 * Math.cos(lat * Math.PI / 180));
   const bbox = {
-    minlat: lat-dlat, maxlat: lat+dlat,
-    minlon: lon-dlon, maxlon: lon+dlon,
+    minlat: lat - dlat, maxlat: lat + dlat,
+    minlon: lon - dlon, maxlon: lon + dlon,
   };
-  const label = `${km}km around current location`;
-  const key   = `radius:${km}km:${lat.toFixed(3)},${lon.toFixed(3)}`;
+  const ts    = new Date().toLocaleTimeString('en', { hour:'2-digit', minute:'2-digit', hour12:true });
+  const label = `${km}km radius (${ts})`;
+  const key   = `radius:${km}:${lat.toFixed(4)},${lon.toFixed(4)}`;
 
+  if (!panelOpen) togglePanel();
   switchTab('cache');
-  setProgress(`Downloading ${km}km radius…`);
+  setProgress(`Downloading ${km}km area…`);
   setProgBar(5);
 
   try {
-    const nodes = await downloadBBox(bbox, label, p => setProgBar(5 + p*93));
+    const nodes = await downloadBBox(bbox, label, p => setProgBar(5 + p * 93));
     await saveRegion(key, label, nodes, bbox);
+    // Reload live nodes if inside this area
     if (gpsPos) {
       osmNodes = await loadNodesFromDB(gpsPos.lat, gpsPos.lon, CFG.OSM_RADIUS_M);
       osmFetchedAt = Date.now();
-      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
+      setStatus('osm', 'ok', `OSM: ${osmNodes.length} (cache)`);
       evaluateMapAlerts();
     }
     setProgBar(100);
     setProgress(`✓ Downloaded ${nodes.length.toLocaleString()} signs for ${label}`);
   } catch(e) {
     setProgress(`Error: ${e.message}`);
+    console.error(e);
   }
 }
 
