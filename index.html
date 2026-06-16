@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#0a0a0a"/>
   <link rel="manifest" href="manifest.json"/>
   <link rel="apple-touch-icon" href="icons/icon-192.png"/>
-  <title>DashGuard V8</title>
+  <title>DashGuard</title>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     :root{
@@ -237,8 +237,12 @@
 </div>
 
 <!-- Info panel — position:fixed, z-index:50, never blocked by start screen -->
+<div id="panel-backdrop" onclick="togglePanel()" style="display:none;position:fixed;inset:0;z-index:49;background:rgba(0,0,0,0.4);"></div>
 <div id="info-panel">
-  <div class="panel-handle" onclick="togglePanel()"></div>
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px 0;">
+    <div class="panel-handle" onclick="togglePanel()" style="margin:0;"></div>
+    <button onclick="togglePanel()" style="background:rgba(255,255,255,0.08);border:none;color:var(--muted);font-size:13px;font-family:inherit;padding:4px 12px;border-radius:100px;cursor:pointer;">✕ Close</button>
+  </div>
   <div class="panel-tabs">
     <button class="ptab active" onclick="switchTab('status')">Status</button>
     <button class="ptab" onclick="switchTab('cache')">Map cache</button>
@@ -249,7 +253,7 @@
     <!-- STATUS -->
     <div class="tab-pane active" id="tab-status">
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-label">Controls ahead</div><div class="stat-val" id="st-signs">0</div></div>
+        <div class="stat-card"><div class="stat-label">Signs ahead</div><div class="stat-val" id="st-signs">0</div></div>
         <div class="stat-card"><div class="stat-label">Nearest</div><div class="stat-val" id="st-nearest">–</div></div>
         <div class="stat-card"><div class="stat-label">Speed</div><div class="stat-val" id="st-speed">–</div></div>
         <div class="stat-card"><div class="stat-label">Heading</div><div class="stat-val" id="st-heading">–</div></div>
@@ -258,9 +262,13 @@
       <div class="info-row"><span>Accuracy</span><span class="info-val" id="st-acc">–</span></div>
       <div class="info-row"><span>Heading source</span><span class="info-val" id="st-hsrc">–</span></div>
       <div class="section-head" style="margin-top:10px;">Map data</div>
-      <div class="info-row"><span>Nearby controls loaded</span><span class="info-val" id="st-nodes">0</span></div>
+      <div class="info-row"><span>Nodes in memory</span><span class="info-val" id="st-nodes">0</span></div>
       <div class="info-row"><span>Last OSM query</span><span class="info-val" id="st-age">–</span></div>
       <div class="info-row"><span>Cached regions</span><span class="info-val" id="st-regions">0</span></div>
+      <div class="section-head" style="margin-top:10px;">Audio</div>
+      <div class="info-row"><span>Engine</span><span class="info-val">Device TTS (no internet)</span></div>
+      <div class="info-row"><span>Status</span><span class="info-val" id="st-audio">–</span></div>
+      <button class="action-btn" style="margin-top:10px;" onclick="testAudio()">🔊 Test voice alert</button>
     </div>
 
     <!-- CACHE -->
@@ -290,7 +298,7 @@
       </div>
 
       <div class="cache-sect">
-        <h3>Downloaded map regions</h3>
+        <h3>Downloaded regions</h3>
         <div id="region-list" class="region-list">
           <div style="font-size:12px;color:var(--muted)">No regions cached yet.</div>
         </div>
@@ -336,7 +344,7 @@
 
 <!-- Start screen — position:fixed z-index:40, BELOW info panel z-index:50 -->
 <div id="start">
-  <h1>Dash<span>Guard</span> V8</h1>
+  <h1>Dash<span>Guard</span></h1>
   <p>Map-primary detection with camera verification. Works in rain, fog, and at night.</p>
   <div class="feat-list">
     <div class="feat"><div class="feat-dot fd-b"></div><span><strong>Primary:</strong> OpenStreetMap gives exact GPS distance to every stop sign and traffic signal</span></div>
@@ -359,14 +367,14 @@
 //  CONFIG
 // ═══════════════════════════════════
 const CFG = {
-  OSM_RADIUS_M:      2000,       // v8: load a wider nearby map set
-  OSM_REFRESH_M:     300,        // v8: fewer live Overpass calls
-  ALERT_MAX_FT:      1000,       // v8: show nearest earlier while testing
+  OSM_RADIUS_M:      2000,   // load nodes within 2000m of GPS position
+  OSM_REFRESH_M:     150,
+  ALERT_MAX_FT:      2500,   // alert up to 2500ft ahead (~760m, matches OSM radius)
   ALERT_MIN_FT:      8,
-  HEADING_CONE_DEG:  90,         // v8: wider cone because phone heading can be noisy
-  HEADING_MIN_MPH:   2,          // v8: start using course sooner
+  HEADING_CONE_DEG:  65,
+  HEADING_MIN_MPH:   5,
   BRACKETS_FT:       [500,400,300,200,150,100,50],
-  BRACKET_WIN_FT:    45,         // v8: less likely to miss a voice bracket
+  BRACKET_WIN_FT:    30,
   SPEAK_COOLDOWN_MS: 8000,
   CAM_CONF_MIN:      0.40,
   STOP_W_CM:         76.2,
@@ -376,7 +384,7 @@ const CFG = {
   M_PER_FT:          0.3048,
   FUSION_MATCH_FT:   100,
   DB_NAME:           'dashguard',
-  DB_VER:            4,          // v8: forces old bad cache to reset
+  DB_VER:            3,
   CHUNK_DEG:         0.4,
 };
 
@@ -419,11 +427,6 @@ function openDB() {
     const req = indexedDB.open(CFG.DB_NAME, CFG.DB_VER);
     req.onupgradeneeded = e => {
       const d = e.target.result;
-      // v8: discard old cached data because earlier versions under-counted and misclassified OSM nodes.
-      if ((e.oldVersion || 0) < 4) {
-        if (d.objectStoreNames.contains('nodes')) d.deleteObjectStore('nodes');
-        if (d.objectStoreNames.contains('regions')) d.deleteObjectStore('regions');
-      }
       if (!d.objectStoreNames.contains('nodes'))   d.createObjectStore('nodes',   {keyPath:'id'});
       if (!d.objectStoreNames.contains('regions')) d.createObjectStore('regions', {keyPath:'key'});
     };
@@ -469,6 +472,15 @@ function idbClear(store) {
 async function loadCachedRegions() {
   if (!db) return;
   cachedRegions = await idbGetAll('regions').catch(()=>[]);
+  // Pre-load all cached nodes into memory immediately so they're ready when GPS arrives
+  if (cachedRegions.length>0) {
+    const all = await idbGetAll('nodes').catch(()=>[]);
+    if (all.length>0) {
+      osmNodes = all;
+      osmFetchedAt = Date.now();
+      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
+    }
+  }
   renderRegionList();
   updateStatusPanel();
 }
@@ -501,6 +513,7 @@ function hasCachedCoverage(lat, lon) {
 //  INIT
 // ═══════════════════════════════════
 async function initApp() {
+  unlockAudio(); // called from button tap — valid gesture context on iOS
   startEl.style.display = 'none';
   showLoading('Opening local map cache…');
   db = await openDB().catch(()=>null);
@@ -757,28 +770,27 @@ function onOrientation(e) {
 async function fetchOSMNodes(lat, lon) {
   lastQueryPos={lat,lon};
 
-  // Use cache if we have coverage
+  // If cached coverage exists, load ALL nodes for that region into memory.
+  // evaluateMapAlerts() handles distance + heading filtering in JS — no need
+  // to pre-filter in the DB query (which caused the "2 nodes" problem).
   if (hasCachedCoverage(lat,lon) && db) {
-    const cached = await loadNodesFromDB(lat, lon, CFG.OSM_RADIUS_M);
-    if (cached.length>0) {
-      osmNodes=cached; osmFetchedAt=Date.now();
-      setStatus('osm','ok',`OSM: ${osmNodes.length} near (cache)`);
+    const allCached = await idbGetAll('nodes').catch(()=>[]);
+    if (allCached.length>0) {
+      osmNodes=allCached; osmFetchedAt=Date.now();
+      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
       evaluateMapAlerts();
       updateStatusPanel();
       return;
     }
   }
 
-  // Live Overpass query for immediate area
+  // No cache — live Overpass query
   setStatus('osm','warn','Fetching OSM…');
   const r=CFG.OSM_RADIUS_M;
-  // v8: download actual stop/signal controls, not every road sign.
-  // Includes highway=stop, highway=traffic_signals, and explicit traffic_sign stop tags such as US:R1-1.
   const q=`[out:json][timeout:20];(`
     +`node["highway"="stop"](around:${r},${lat},${lon});`
     +`node["highway"="traffic_signals"](around:${r},${lat},${lon});`
-    +`node[~"^traffic_sign(:.*)?$"~"(stop|US:R1-1|R1-1|traffic_signals)",i](around:${r},${lat},${lon});`
-    +`node["traffic_signals"](around:${r},${lat},${lon});`
+    +`node["highway"="give_way"](around:${r},${lat},${lon});`
     +`);out body;`;
   try {
     const res  = await fetch('https://overpass-api.de/api/interpreter', {
@@ -788,13 +800,13 @@ async function fetchOSMNodes(lat, lon) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    osmNodes   = (json.elements||[]).map(toNode).filter(Boolean);
+    osmNodes   = (json.elements||[]).map(toNode);
     osmFetchedAt=Date.now();
-    setStatus('osm','ok',`OSM: ${osmNodes.length} near`);
+    setStatus('osm','ok',`OSM: ${osmNodes.length}`);
     evaluateMapAlerts();
     updateStatusPanel();
   } catch(e) {
-    setStatus('osm','err',`OSM fail (${osmNodes.length} nodes)`);
+    setStatus('osm','err',`OSM fail (${osmNodes.length} nodes in memory)`);
     console.warn('OSM fetch:', e);
     if (osmNodes.length>0) evaluateMapAlerts();
   }
@@ -807,23 +819,19 @@ function evaluateMapAlerts() {
   if (!gpsPos||!mapEnabled) return;
   const {lat,lon,heading,speedMph}=gpsPos;
   const hits=[];
-  let nearestRaw=null, rawWithinRange=0, rejectedByHeading=0;
   for (const node of osmNodes) {
     const distFt=haversineM(lat,lon,node.lat,node.lon)/CFG.M_PER_FT;
-    if (!nearestRaw || distFt < nearestRaw.distFt) nearestRaw = {node, distFt};
     if (distFt>CFG.ALERT_MAX_FT||distFt<CFG.ALERT_MIN_FT) continue;
-    rawWithinRange++;
     if (heading!=null&&speedMph>=CFG.HEADING_MIN_MPH) {
       const diff=angleDiff(bearingDeg(lat,lon,node.lat,node.lon),heading);
-      if (Math.abs(diff)>CFG.HEADING_CONE_DEG) { rejectedByHeading++; continue; }
+      if (Math.abs(diff)>CFG.HEADING_CONE_DEG) continue;
     }
     hits.push({type:node.type, distFt:Math.round(distFt), nodeId:node.id, source:'map'});
   }
   hits.sort((a,b)=>a.distFt-b.distFt);
   lastMapHits=hits;
   mergeAndRender();
-  const rawTxt = nearestRaw ? ` nearestRaw:${Math.round(nearestRaw.distFt)}ft/${nearestRaw.node.type}` : ' nearestRaw:none';
-  dbg(`Map ahead:${hits.length} inRange:${rawWithinRange} rejectedHdg:${rejectedByHeading} hdg:${heading!=null?Math.round(heading)+'°':'off'} nodes:${osmNodes.length}${rawTxt}`);
+  dbg(`Map:${hits.length} hdg:${heading!=null?Math.round(heading)+'°':'off'} nodes:${osmNodes.length}`);
 }
 
 // ═══════════════════════════════════
@@ -903,13 +911,64 @@ function buildUtterance(a) {
   if (ft>=55)  return `${type}, ${ft} feet.`;
   return a.type==='stop'?'Stop sign. Please do not roll through.':'Traffic signal. Watch the light.';
 }
-function speak(text) {
-  if (muted||!window.speechSynthesis) return;
-  const u=new SpeechSynthesisUtterance(text);
-  u.rate=0.92; u.pitch=1.0; u.volume=1.0;
-  const en=speechSynthesis.getVoices().find(v=>v.lang.startsWith('en')&&v.localService);
-  if (en) u.voice=en;
+// ═══════════════════════════════════
+//  VOICE — Web Speech API (device TTS, no internet)
+// ═══════════════════════════════════
+// iOS Safari requires speech to be triggered within a user gesture call stack
+// on first use. We unlock it on the very first button tap anywhere in the app.
+let audioUnlocked = false;
+
+function unlockAudio() {
+  if (audioUnlocked || !window.speechSynthesis) return;
+  // Speak an empty string — this primes the audio session on iOS
+  const u = new SpeechSynthesisUtterance('');
+  u.volume = 0;
+  speechSynthesis.speak(u);
+  audioUnlocked = true;
+  setAudioStatus();
+}
+
+function setAudioStatus() {
+  const el = document.getElementById('st-audio');
+  if (!el) return;
+  if (!window.speechSynthesis) { el.textContent = '✗ Not supported'; return; }
+  const voices = speechSynthesis.getVoices();
+  const en = voices.find(v=>v.lang.startsWith('en')&&v.localService);
+  if (!audioUnlocked) el.textContent = 'Tap any button to unlock';
+  else if (muted)     el.textContent = '🔇 Muted';
+  else if (en)        el.textContent = `✓ Ready (${en.name})`;
+  else                el.textContent = voices.length ? `✓ Ready (${voices.length} voices)` : 'Loading voices…';
+}
+
+function testAudio() {
+  unlockAudio();
+  if (!window.speechSynthesis) {
+    document.getElementById('st-audio').textContent = '✗ Speech not supported in this browser';
+    return;
+  }
+  if (muted) {
+    document.getElementById('st-audio').textContent = 'Muted — tap Voice button to unmute first';
+    return;
+  }
   speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance('Stop sign ahead, three hundred feet. DashGuard audio is working.');
+  u.rate = 0.92; u.pitch = 1.0; u.volume = 1.0;
+  const voices = speechSynthesis.getVoices();
+  const en = voices.find(v=>v.lang.startsWith('en')&&v.localService);
+  if (en) u.voice = en;
+  u.onstart = () => { document.getElementById('st-audio').textContent = '🔊 Speaking…'; };
+  u.onend   = () => setAudioStatus();
+  u.onerror = (e) => { document.getElementById('st-audio').textContent = `✗ Error: ${e.error}`; };
+  speechSynthesis.speak(u);
+}
+
+function speak(text) {
+  if (muted || !window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 0.92; u.pitch = 1.0; u.volume = 1.0;
+  const en = speechSynthesis.getVoices().find(v=>v.lang.startsWith('en')&&v.localService);
+  if (en) u.voice = en;
   speechSynthesis.speak(u);
 }
 
@@ -949,7 +1008,7 @@ async function downloadRegion() {
     const [minlat,maxlat,minlon,maxlon]=best.boundingbox.map(Number);
     const bbox={minlat,maxlat,minlon,maxlon};
     const dispName=best.display_name.split(',')[0];
-    setProgress(`Found: ${dispName}. Downloading stop/light controls…`);
+    setProgress(`Found: ${dispName}. Downloading signs…`);
     setProgBar(8);
 
     const nodes=await downloadBBox(bbox, label, p=>setProgBar(8+p*90));
@@ -967,12 +1026,12 @@ async function downloadRegion() {
     if (gpsPos&&hasCachedCoverage(gpsPos.lat,gpsPos.lon)) {
       osmNodes=await loadNodesFromDB(gpsPos.lat,gpsPos.lon,CFG.OSM_RADIUS_M);
       osmFetchedAt=Date.now();
-      setStatus('osm','ok',`OSM: ${osmNodes.length} near (cache)`);
+      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
       evaluateMapAlerts();
     }
 
     setProgBar(100);
-    setProgress(`✓ Saved ${nodes.length.toLocaleString()} controls for ${label}`);
+    setProgress(`✓ Saved ${nodes.length.toLocaleString()} signs for ${label}`);
     document.getElementById('inp-state').value='';
     document.getElementById('inp-county').value='';
   } catch(e) {
@@ -1015,7 +1074,7 @@ async function downloadRadius(km) {
     if (gpsPos) {
       osmNodes=await loadNodesFromDB(gpsPos.lat,gpsPos.lon,CFG.OSM_RADIUS_M);
       osmFetchedAt=Date.now();
-      setStatus('osm','ok',`OSM: ${osmNodes.length} near (cache)`);
+      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
       evaluateMapAlerts();
     }
     setProgBar(100);
@@ -1043,12 +1102,10 @@ async function downloadBBox(bbox, label, onProgress) {
     for (const [lo1,lo2] of lonSteps) {
       // toFixed(6) prevents scientific notation in coordinates
       const box=[la1,lo1,la2,lo2].map(n=>n.toFixed(6)).join(',');
-      // v8: broader but still focused query for stop signs and traffic signals.
-      const q=`[out:json][timeout:35];(`
+      const q=`[out:json][timeout:28];(`
         +`node["highway"="stop"](${box});`
         +`node["highway"="traffic_signals"](${box});`
-        +`node[~"^traffic_sign(:.*)?$"~"(stop|US:R1-1|R1-1|traffic_signals)",i](${box});`
-        +`node["traffic_signals"](${box});`
+        +`node["highway"="give_way"](${box});`
         +`);out body;`;
       try {
         const res=await fetch('https://overpass-api.de/api/interpreter',{
@@ -1058,7 +1115,7 @@ async function downloadBBox(bbox, label, onProgress) {
         });
         if (res.ok) {
           const json=await res.json();
-          if (json.elements) json.elements.forEach(el=>{ const n=toNode(el); if (n) all.set(n.id,n); });
+          if (json.elements) json.elements.forEach(el=>all.set(el.id,toNode(el)));
         } else {
           console.warn(`Chunk HTTP ${res.status}`);
         }
@@ -1067,7 +1124,7 @@ async function downloadBBox(bbox, label, onProgress) {
       }
       done++;
       onProgress(done/total);
-      setProgress(`${label} — chunk ${done}/${total} · ${all.size.toLocaleString()} controls so far`);
+      setProgress(`${label} — chunk ${done}/${total} · ${all.size.toLocaleString()} signs so far`);
       if (done<total) await sleep(350);
     }
   }
@@ -1088,7 +1145,7 @@ function renderRegionList() {
     <div class="region-item">
       <div>
         <div class="region-name">${r.label}</div>
-        <div class="region-meta">${(r.nodeCount||0).toLocaleString()} controls · ${timeAgo(r.ts)}</div>
+        <div class="region-meta">${(r.nodeCount||0).toLocaleString()} signs · ${timeAgo(r.ts)}</div>
       </div>
       <button class="region-del" onclick="deleteRegion('${r.key}')">×</button>
     </div>`).join('');
@@ -1124,10 +1181,12 @@ function setProgBar(pct) {
 //  UI CONTROLS
 // ═══════════════════════════════════
 function toggleMute() {
+  unlockAudio();
   muted=!muted;
   document.getElementById('mute-icon').textContent=muted?'🔇':'🔊';
   document.getElementById('btn-mute').classList.toggle('is-muted',muted);
   if (muted) speechSynthesis.cancel();
+  setAudioStatus();
 }
 
 function toggleMap() {
@@ -1141,6 +1200,7 @@ function toggleMap() {
 function togglePanel() {
   panelOpen=!panelOpen;
   panelEl.classList.toggle('open',panelOpen);
+  document.getElementById('panel-backdrop').style.display = panelOpen ? 'block' : 'none';
   if (panelOpen) updateStatusPanel();
 }
 
@@ -1172,10 +1232,10 @@ function updateStatusPanel() {
   document.getElementById('st-signs').textContent   = ahead.length;
   document.getElementById('st-nearest').textContent = ahead.length?`${ahead[0].distFt} ft`:'–';
   document.getElementById('st-speed').textContent   = gpsPos?`${Math.round(gpsPos.speedMph)} mph`:'–';
-  document.getElementById('st-heading').textContent = gpsPos?.heading!=null?`${Math.round(gpsPos.heading)}°`:'n/a';
+  document.getElementById('st-heading').textContent = gpsPos?.heading!=null?`${Math.round(gpsPos.heading)}°`:'n/a (no filter)';
   document.getElementById('st-acc').textContent     = gpsPos?`±${Math.round(gpsPos.accuracy)}m`:'–';
-  document.getElementById('st-hsrc').textContent    = gpsPos?.headingSrc||'–';
-  document.getElementById('st-nodes').textContent   = osmNodes.length;
+  document.getElementById('st-hsrc').textContent    = gpsPos?.headingSrc||'none';
+  document.getElementById('st-nodes').textContent   = osmNodes.length + (osmNodes.length===0?' ⚠ no data':'');
   document.getElementById('st-age').textContent     = osmFetchedAt?`${Math.round((Date.now()-osmFetchedAt)/1000)}s ago`:'–';
   document.getElementById('st-regions').textContent = cachedRegions.length;
 }
@@ -1220,20 +1280,7 @@ function nearestBracket(ft) {
   return null;
 }
 function estimateDist(px,realCm) { return Math.round((realCm*CFG.FOCAL_PX)/Math.max(px,1)/CFG.CM_PER_FT); }
-function toNode(el) {
-  const tags = el.tags || {};
-  const vals = Object.values(tags).join(';').toLowerCase();
-  let type = null;
-
-  if (tags.highway === 'traffic_signals' || ('traffic_signals' in tags) || vals.includes('traffic_signals')) {
-    type = 'signal';
-  } else if (tags.highway === 'stop' || vals.includes('us:r1-1') || vals.includes('r1-1') || /(^|[;,_: -])stop($|[;,_: -])/.test(vals)) {
-    type = 'stop';
-  }
-
-  if (!type || el.lat == null || el.lon == null) return null;
-  return {id:`${el.type || 'node'}:${el.id}`,lat:el.lat,lon:el.lon,type,tags};
-}
+function toNode(el) { return {id:el.id,lat:el.lat,lon:el.lon,type:el.tags?.highway==='traffic_signals'?'signal':'stop'}; }
 function sleep(ms)  { return new Promise(r=>setTimeout(r,ms)); }
 function timeAgo(ts) {
   const s=Math.round((Date.now()-ts)/1000);
@@ -1271,7 +1318,7 @@ if ('serviceWorker' in navigator) {
 }
 if (window.speechSynthesis) {
   speechSynthesis.getVoices();
-  speechSynthesis.onvoiceschanged=()=>speechSynthesis.getVoices();
+  speechSynthesis.onvoiceschanged = () => { speechSynthesis.getVoices(); setAudioStatus(); };
 }
 </script>
 </body>
