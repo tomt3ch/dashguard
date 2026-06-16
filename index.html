@@ -518,8 +518,13 @@ async function initApp() {
   db = await openDB().catch(()=>null);
   await loadCachedRegions();
 
-  showLoading('Loading detection model…\n(~5 MB, cached after first load)');
+  showLoading('Loading YOLOv8 model…\n(13 MB — needs internet on first load,\nthen cached offline)');
   await loadTFModel();
+  if (!tfModel) {
+    // Model failed — could be missing yolov8n.onnx or no internet
+    showLoading('⚠ Model load failed.\nMake sure yolov8n.onnx is in your GitHub repo root.\nCamera detection disabled — map layer still works.');
+    await sleep(3000);
+  }
 
   showLoading('Requesting camera…');
   await startCamera(null);
@@ -533,21 +538,34 @@ async function initApp() {
 // ═══════════════════════════════════
 //  YOLO MODEL (YOLOv8n ONNX via onnxruntime-web)
 // ═══════════════════════════════════
-// YOLOv8n COCO class indices we care about:
-const YOLO_STOP_IDX    = 11;  // "stop sign"
-const YOLO_LIGHT_IDX   = 9;   // "traffic light"
-const YOLO_INPUT_SIZE  = 640; // model input dimension
+const YOLO_STOP_IDX   = 11;  // COCO class: "stop sign"
+const YOLO_LIGHT_IDX  = 9;   // COCO class: "traffic light"
+const YOLO_INPUT_SIZE = 640;
+
+// Offscreen canvas for preprocessing — created once
+let offscreen = null;
+let offCtx    = null;
 
 async function loadTFModel() {
   if (tfModel) return;
+  // Ensure onnxruntime-web loaded from CDN
+  if (typeof ort === 'undefined') {
+    setStatus('cam','err','ONNX runtime not loaded');
+    console.error('ort is undefined — CDN script may have failed');
+    return;
+  }
   try {
     setStatus('cam','warn','Loading YOLOv8…');
-    // Point to the model in the same repo
     ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/';
     tfModel = await ort.InferenceSession.create('./yolov8n.onnx', {
       executionProviders: ['wasm'],
       graphOptimizationLevel: 'all',
     });
+    // Create offscreen canvas now that we know model loaded
+    offscreen        = document.createElement('canvas');
+    offscreen.width  = YOLO_INPUT_SIZE;
+    offscreen.height = YOLO_INPUT_SIZE;
+    offCtx           = offscreen.getContext('2d');
     setStatus('cam','ok','YOLOv8 ready');
   } catch(e) {
     setStatus('cam','err','Model failed');
@@ -555,20 +573,11 @@ async function loadTFModel() {
   }
 }
 
-// ═══════════════════════════════════
-//  CAMERA DETECTION LOOP
-// ═══════════════════════════════════
-// Offscreen canvas for preprocessing
-const offscreen = document.createElement('canvas');
-offscreen.width  = YOLO_INPUT_SIZE;
-offscreen.height = YOLO_INPUT_SIZE;
-const offCtx = offscreen.getContext('2d');
-
 function beginDetection() {
   detecting = true;
   let busy = false;
   async function loop() {
-    if (!detecting || !tfModel || !camEnabled) return;
+    if (!detecting || !tfModel || !camEnabled || !offCtx) return;
     if (!busy && camEl.readyState === camEl.HAVE_ENOUGH_DATA) {
       busy = true;
       overlayEl.width  = camEl.videoWidth;
