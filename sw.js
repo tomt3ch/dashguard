@@ -8,10 +8,9 @@ const APP_SHELL = [
   './icons/icon-512.png',
 ];
 
-// CDN hosts whose responses we cache aggressively (TF.js model weights)
+// CDN hosts whose responses we cache aggressively (ONNX runtime + model weights)
 const CDN_CACHE_HOSTS = [
   'cdn.jsdelivr.net',
-  'unpkg.com',
 ];
 
 self.addEventListener('install', e => {
