@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="DashGuard"/>
+  <meta name="theme-color" content="#0a0a0a"/>
+  <link rel="manifest" href="manifest.json"/>
+  <link rel="apple-touch-icon" href="icons/icon-192.png"/>
+  <title>DashGuard</title>
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --red:#E24B4A;--amber:#EF9F27;--green:#4CAF50;--blue:#378ADD;--teal:#1D9E75;
+      --bg:#0a0a0a;--surface:#141414;--surface2:#1e1e1e;
+      --border:rgba(255,255,255,0.08);--border2:rgba(255,255,255,0.14);
+      --text:#fff;--muted:rgba(255,255,255,0.45);--muted2:rgba(255,255,255,0.25);
+      --safe-top:env(safe-area-inset-top,0px);--safe-bot:env(safe-area-inset-bottom,0px);
+    }
+    html,body{height:100%;background:var(--bg);color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;
+      overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;}
+
+    /* ── Layout ── */
+    #app{display:flex;flex-direction:column;height:100dvh;
+      padding-top:var(--safe-top);padding-bottom:var(--safe-bot);}
+
+    /* ── Camera ── */
+    #cam-wrap{position:relative;flex:1;background:#000;overflow:hidden;}
+    #cam{width:100%;height:100%;object-fit:cover;display:block;}
+    #overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
+
+    /* ── HUD top bar ── */
+    #hud-top{
+      position:absolute;top:12px;left:12px;right:12px;
+      display:flex;align-items:center;gap:8px;z-index:5;
+    }
+    .pill{
+      display:flex;align-items:center;gap:5px;
+      background:rgba(0,0,0,0.72);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+      border:0.5px solid var(--border);border-radius:100px;
+      padding:5px 10px 5px 7px;font-size:11px;color:var(--muted);white-space:nowrap;
+    }
+    .dot{width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0;}
+    .dot.ok{background:var(--green);}
+    .dot.warn{background:var(--amber);animation:blink 1.2s infinite;}
+    .dot.err{background:var(--red);}
+    .dot.pulse{background:var(--green);animation:blink 2s infinite;}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
+    #speed-pill{margin-left:auto;font-size:13px;font-weight:600;color:var(--text);}
+
+    /* ── Source badge ── */
+    .src-badge{
+      display:inline-block;font-size:9px;font-weight:700;letter-spacing:.5px;
+      padding:1px 5px;border-radius:4px;margin-left:4px;vertical-align:middle;
+    }
+    .src-map{background:rgba(55,138,221,0.3);color:#7db8e8;}
+    .src-cam{background:rgba(239,159,39,0.3);color:#f0b84a;}
+    .src-both{background:rgba(29,158,117,0.3);color:#4ecba5;}
+
+    /* ── Alert cards ── */
+    #alert-wrap{
+      position:absolute;bottom:14px;left:12px;right:12px;
+      display:flex;flex-direction:column;gap:8px;z-index:5;
+    }
+
+    .alert-card{
+      display:flex;align-items:center;gap:12px;
+      background:rgba(10,10,10,0.82);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+      border-radius:14px;padding:12px 14px;
+      border-left:3px solid var(--red);
+      animation:slideUp .2s ease;
+    }
+    .alert-card.light{border-left-color:var(--blue);}
+    .alert-card.unverified{border-left-color:var(--amber);}
+    @keyframes slideUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+    .alert-icon{font-size:24px;flex-shrink:0;}
+    .alert-body{flex:1;min-width:0;}
+    .alert-label{font-size:15px;font-weight:600;letter-spacing:-.2px;}
+    .alert-sub{font-size:11px;color:var(--muted);margin-top:2px;}
+    .alert-dist{font-size:22px;font-weight:700;letter-spacing:-1px;color:var(--text);min-width:64px;text-align:right;}
+
+    /* Urgency colour on distance */
+    .alert-dist.far{color:var(--muted);}
+    .alert-dist.mid{color:var(--amber);}
+    .alert-dist.near{color:var(--red);}
+
+    /* ── Bottom bar ── */
+    #bottom{
+      flex-shrink:0;background:var(--surface);
+      border-top:0.5px solid var(--border);
+      padding:10px 12px;display:flex;gap:8px;align-items:stretch;
+    }
+    .btn{
+      flex:1;background:rgba(255,255,255,0.05);
+      border:0.5px solid var(--border);border-radius:12px;
+      color:var(--text);font-size:11px;font-family:inherit;
+      padding:9px 6px;cursor:pointer;
+      display:flex;flex-direction:column;align-items:center;gap:3px;
+      -webkit-appearance:none;transition:background .12s;
+    }
+    .btn:active{background:rgba(255,255,255,0.12);}
+    .btn .bi{font-size:20px;}
+    .btn.active-cam{background:rgba(226,75,74,.15);border-color:rgba(226,75,74,.35);color:var(--red);}
+    .btn.active-map{background:rgba(55,138,221,.15);border-color:rgba(55,138,221,.35);color:var(--blue);}
+    .btn.muted-btn{color:var(--amber);}
+
+    /* ── Start screen ── */
+    #start{
+      position:absolute;inset:0;z-index:20;background:var(--bg);
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      gap:20px;padding:32px;
+    }
+    #start h1{font-size:36px;font-weight:700;letter-spacing:-2px;}
+    #start h1 span{color:var(--red);}
+    #start p{font-size:14px;color:var(--muted);text-align:center;line-height:1.6;max-width:300px;}
+    .feat-list{display:flex;flex-direction:column;gap:9px;width:100%;max-width:310px;}
+    .feat{display:flex;align-items:flex-start;gap:10px;font-size:13px;color:rgba(255,255,255,.7);line-height:1.4;}
+    .feat-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:4px;}
+    .fd-blue{background:var(--blue);}
+    .fd-amber{background:var(--amber);}
+    .fd-green{background:var(--green);}
+    .big-btn{
+      width:100%;max-width:310px;background:var(--blue);color:#fff;
+      border:none;border-radius:14px;font-size:16px;font-weight:600;
+      font-family:inherit;padding:15px;cursor:pointer;
+    }
+    .big-btn:active{opacity:.82;}
+    .demo-link{font-size:13px;color:var(--muted);background:none;border:none;font-family:inherit;cursor:pointer;text-decoration:underline;}
+
+    /* ── Loading overlay ── */
+    #loading{
+      position:absolute;inset:0;z-index:15;background:rgba(10,10,10,.9);
+      display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+    }
+    #loading.hidden{display:none;}
+    .spinner{width:34px;height:34px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--blue);border-radius:50%;animation:spin .75s linear infinite;}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #load-msg{font-size:13px;color:var(--muted);text-align:center;padding:0 24px;line-height:1.5;}
+
+    /* ── Map layer info panel (collapsible) ── */
+    #map-panel{
+      position:absolute;top:52px;right:12px;z-index:6;
+      background:rgba(10,10,10,.82);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+      border:0.5px solid var(--border);border-radius:12px;
+      padding:10px 12px;width:180px;
+      font-size:11px;color:var(--muted);
+      transition:opacity .2s;
+    }
+    #map-panel.hidden{display:none;}
+    #map-panel .mp-row{display:flex;justify-content:space-between;margin-bottom:4px;}
+    #map-panel .mp-val{color:var(--text);font-weight:600;}
+
+    /* ── Heading cone indicator ── */
+    #heading-ring{
+      position:absolute;bottom:20px;right:16px;z-index:6;
+      width:52px;height:52px;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div id="cam-wrap">
+    <video id="cam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+
+    <!-- HUD top -->
+    <div id="hud-top">
+      <div class="pill"><div class="dot" id="gps-dot"></div><span id="gps-txt">GPS…</span></div>
+      <div class="pill"><div class="dot" id="osm-dot"></div><span id="osm-txt">OSM…</span></div>
+      <div class="pill"><div class="dot" id="cam-dot"></div><span id="cam-txt">Cam…</span></div>
+      <div class="pill" id="speed-pill">– mph</div>
+    </div>
+
+    <!-- Map info panel -->
+    <div id="map-panel" class="hidden">
+      <div class="mp-row"><span>Signs ahead</span><span class="mp-val" id="mp-signs">–</span></div>
+      <div class="mp-row"><span>Nearest</span><span class="mp-val" id="mp-nearest">–</span></div>
+      <div class="mp-row"><span>Heading</span><span class="mp-val" id="mp-heading">–</span></div>
+      <div class="mp-row"><span>OSM age</span><span class="mp-val" id="mp-age">–</span></div>
+    </div>
+
+    <!-- Alert cards -->
+    <div id="alert-wrap"></div>
+
+    <!-- Heading ring SVG -->
+    <svg id="heading-ring" viewBox="0 0 52 52">
+      <circle cx="26" cy="26" r="23" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="1"/>
+      <path id="cone-path" fill="rgba(55,138,221,.25)" stroke="rgba(55,138,221,.6)" stroke-width=".5"/>
+      <circle cx="26" cy="26" r="3" fill="var(--blue)"/>
+    </svg>
+
+    <!-- Loading -->
+    <div id="loading">
+      <div class="spinner"></div>
+      <div id="load-msg">Starting up…</div>
+    </div>
+  </div>
+
+  <!-- Bottom controls -->
+  <div id="bottom">
+    <button class="btn" id="btn-cam" onclick="toggleCamera()">
+      <span class="bi">📷</span><span id="lbl-cam">Camera</span>
+    </button>
+    <button class="btn" id="btn-map" onclick="toggleMap()">
+      <span class="bi">🗺️</span><span id="lbl-map">Map layer</span>
+    </button>
+    <button class="btn" id="btn-mute" onclick="toggleMute()">
+      <span class="bi" id="mute-icon">🔊</span><span>Voice</span>
+    </button>
+    <button class="btn" id="btn-info" onclick="togglePanel()">
+      <span class="bi">📊</span><span>Info</span>
+    </button>
+    <button class="btn" onclick="runDemo()">
+      <span class="bi">🎬</span><span>Demo</span>
+    </button>
+  </div>
+</div>
+
+<!-- Start screen -->
+<div id="start">
+  <h1>Dash<span>Guard</span></h1>
+  <p>Map-primary detection with camera verification. Works in rain, fog, and at night.</p>
+  <div class="feat-list">
+    <div class="feat"><div class="feat-dot fd-blue"></div><span><strong>Primary:</strong> OpenStreetMap queries stop signs &amp; signals ahead of you — exact GPS distance</span></div>
+    <div class="feat"><div class="feat-dot fd-amber"></div><span><strong>Secondary:</strong> Live camera catches unmapped signs &amp; verifies map data</span></div>
+    <div class="feat"><div class="feat-dot fd-green"></div><span><strong>Resilient:</strong> Bad weather degrades camera only — map keeps warning you</span></div>
+  </div>
+  <button class="big-btn" onclick="initApp()">Allow Camera &amp; GPS — Start</button>
+  <button class="demo-link" onclick="startDemo()">Try demo first →</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════
+const OSM_QUERY_RADIUS_M  = 600;   // query circle around current position
+const OSM_REFRESH_DIST_M  = 200;   // re-query when moved this far from last query point
+const HEADING_CONE_DEG    = 50;    // half-angle of "ahead" cone each side
+const ALERT_BRACKETS_FT   = [500, 400, 300, 200, 150, 100, 50];
+const BRACKET_WINDOW_FT   = 30;
+const SPEAK_COOLDOWN_MS   = 8000;
+const CAM_CONF_MIN        = 0.42;
+const STOP_W_CM           = 76.2;
+const LIGHT_H_CM          = 114;
+const FOCAL_PX            = 700;
+const CM_PER_FT           = 30.48;
+const M_PER_FT            = 0.3048;
+const FUSION_MATCH_FT     = 80;    // distance within which map+cam are same object
+
+// ═══════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════
+let tfModel       = null;
+let videoStream   = null;
+let detecting     = false;
+let rafId         = null;
+let muted         = false;
+let mapEnabled    = true;
+let camEnabled    = true;
+let demoTimer     = null;
+let panelOpen     = false;
+
+// GPS state
+let gpsPos        = null;   // { lat, lon, heading, speedMph }
+let lastQueryPos  = null;
+let gpsWatchId    = null;
+
+// Map data
+let osmNodes      = [];     // [{lat, lon, type:'stop'|'signal', id}]
+let osmFetchedAt  = null;
+
+// Fusion alerts — merged map+cam detections
+let activeAlerts  = [];     // [{id, type, source, distFt, confirmedBy, ts}]
+
+// Voice throttle
+let lastSpoken    = {};     // key → timestamp
+
+// ═══════════════════════════════════════════════════════
+//  DOM
+// ═══════════════════════════════════════════════════════
+const camEl       = document.getElementById('cam');
+const overlayEl   = document.getElementById('overlay');
+const ctx         = overlayEl.getContext('2d');
+const loadingEl   = document.getElementById('loading');
+const loadMsg     = document.getElementById('load-msg');
+const startEl     = document.getElementById('start');
+const alertWrap   = document.getElementById('alert-wrap');
+const mapPanel    = document.getElementById('map-panel');
+const conePath    = document.getElementById('cone-path');
+const btnCam      = document.getElementById('btn-cam');
+const btnMap      = document.getElementById('btn-map');
+const lblCam      = document.getElementById('lbl-cam');
+
+// Status indicators
+const gpsDot    = document.getElementById('gps-dot');
+const gpsTxt    = document.getElementById('gps-txt');
+const osmDot    = document.getElementById('osm-dot');
+const osmTxt    = document.getElementById('osm-txt');
+const camDot    = document.getElementById('cam-dot');
+const camTxt    = document.getElementById('cam-txt');
+const speedPill = document.getElementById('speed-pill');
+
+// ═══════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════
+async function initApp() {
+  startEl.style.display = 'none';
+  showLoading('Loading AI detection model…\n(~5 MB, cached after first load)');
+  await loadTFModel();
+  showLoading('Requesting camera…');
+  await startCamera();
+  showLoading('Requesting GPS…');
+  startGPS();
+  hideLoading();
+}
+
+function startDemo() {
+  startEl.style.display = 'none';
+  showLoading('Loading model for demo…');
+  loadTFModel().then(() => {
+    hideLoading();
+    runDemo();
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  TF MODEL
+// ═══════════════════════════════════════════════════════
+async function loadTFModel() {
+  if (tfModel) return;
+  try {
+    setStatus('cam', 'warn', 'Loading model…');
+    tfModel = await cocoSsd.load({ base: 'mobilenet_v2' });
+    setStatus('cam', 'ok', 'Cam ready');
+  } catch(e) {
+    setStatus('cam', 'err', 'Model failed');
+    console.error('TF load:', e);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  CAMERA
+// ═══════════════════════════════════════════════════════
+async function startCamera() {
+  if (videoStream) return;
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} },
+      audio:false
+    });
+    camEl.srcObject = videoStream;
+    await camEl.play();
+    btnCam.classList.add('active-cam');
+    lblCam.textContent = 'Camera on';
+    setStatus('cam', 'pulse', 'Detecting');
+    beginDetection();
+  } catch(e) {
+    setStatus('cam', 'err', 'Cam denied');
+    camEnabled = false;
+    alert('Camera access denied.\nIn Safari: tap AA → Website Settings → Camera → Allow, then reload.');
+  }
+}
+
+function stopCamera() {
+  if (videoStream) { videoStream.getTracks().forEach(t => t.stop()); videoStream = null; }
+  camEl.srcObject = null;
+  detecting = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  btnCam.classList.remove('active-cam');
+  lblCam.textContent = 'Camera';
+  setStatus('cam', '', 'Cam off');
+  ctx.clearRect(0, 0, overlayEl.width, overlayEl.height);
+}
+
+function toggleCamera() {
+  camEnabled = !camEnabled;
+  if (camEnabled) startCamera();
+  else { stopCamera(); setStatus('cam', '', 'Cam off'); }
+}
+
+// ═══════════════════════════════════════════════════════
+//  CAMERA DETECTION LOOP
+// ═══════════════════════════════════════════════════════
+function beginDetection() {
+  detecting = true;
+  async function loop() {
+    if (!detecting || !tfModel || !camEnabled) return;
+    if (camEl.readyState === camEl.HAVE_ENOUGH_DATA) {
+      overlayEl.width  = camEl.videoWidth;
+      overlayEl.height = camEl.videoHeight;
+      try {
+        const preds = await tfModel.detect(camEl);
+        processCamPredictions(preds);
+      } catch(_) {}
+    }
+    rafId = requestAnimationFrame(loop);
+  }
+  loop();
+}
+
+function processCamPredictions(preds) {
+  ctx.clearRect(0, 0, overlayEl.width, overlayEl.height);
+  const camHits = [];
+
+  for (const p of preds) {
+    if (p.score < CAM_CONF_MIN) continue;
+    const cls = p.class.toLowerCase();
+    const isStop  = cls === 'stop sign';
+    const isLight = cls === 'traffic light';
+    if (!isStop && !isLight) continue;
+
+    const [x, y, w, h] = p.bbox;
+    const distFt = estimateDist(isStop ? w : h, isStop ? STOP_W_CM : LIGHT_H_CM);
+
+    // Draw bounding box
+    const col = isStop ? '#E24B4A' : '#378ADD';
+    ctx.strokeStyle = col;
+    ctx.lineWidth = Math.max(2, overlayEl.width / 350);
+    ctx.strokeRect(x, y, w, h);
+
+    // Label chip
+    const tag = `${isStop ? '🛑' : '🚦'} ~${distFt}ft  CAM`;
+    const fs  = Math.max(11, overlayEl.width / 60);
+    ctx.font = `600 ${fs}px -apple-system,sans-serif`;
+    const tw = ctx.measureText(tag).width;
+    ctx.fillStyle = col + 'cc';
+    ctx.fillRect(x, y - fs - 8, tw + 10, fs + 8);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(tag, x + 5, y - 4);
+
+    camHits.push({ type: isStop ? 'stop' : 'signal', distFt, score: p.score, source: 'cam' });
+  }
+
+  fusionMerge([], camHits);
+}
+
+// ═══════════════════════════════════════════════════════
+//  GPS
+// ═══════════════════════════════════════════════════════
+function startGPS() {
+  if (!navigator.geolocation) {
+    setStatus('gps', 'err', 'No GPS');
+    setStatus('osm', 'err', 'No GPS');
+    return;
+  }
+  setStatus('gps', 'warn', 'Acquiring…');
+
+  gpsWatchId = navigator.geolocation.watchPosition(
+    pos => onGPSUpdate(pos),
+    err => {
+      console.warn('GPS err:', err);
+      setStatus('gps', 'err', 'GPS error');
+    },
+    { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+  );
+}
+
+function onGPSUpdate(pos) {
+  const { latitude: lat, longitude: lon, heading, speed } = pos.coords;
+  const speedMph = speed ? Math.round(speed * 2.237) : 0;
+
+  gpsPos = { lat, lon, heading: heading || 0, speedMph };
+  setStatus('gps', 'ok', `GPS ±${Math.round(pos.coords.accuracy)}m`);
+  speedPill.textContent = speedMph > 2 ? `${speedMph} mph` : '– mph';
+
+  // Update heading cone visualisation
+  updateCone(heading || 0);
+
+  // Query OSM if we've moved enough
+  if (mapEnabled) {
+    if (!lastQueryPos || haversineM(lat, lon, lastQueryPos.lat, lastQueryPos.lon) > OSM_REFRESH_DIST_M) {
+      fetchOSMNodes(lat, lon);
+    }
+    evaluateMapAlerts();
+  }
+
+  updateMapPanel();
+}
+
+// ═══════════════════════════════════════════════════════
+//  OSM OVERPASS QUERY
+// ═══════════════════════════════════════════════════════
+async function fetchOSMNodes(lat, lon) {
+  lastQueryPos = { lat, lon };
+  setStatus('osm', 'warn', 'Fetching OSM…');
+
+  // Query stop signs + traffic signals in radius
+  const r = OSM_QUERY_RADIUS_M;
+  const query = `
+[out:json][timeout:10];
+(
+  node["highway"="stop"](around:${r},${lat},${lon});
+  node["highway"="traffic_signals"](around:${r},${lat},${lon});
+  node["highway"="give_way"](around:${r},${lat},${lon});
+);
+out body;`;
+
+  try {
+    const url = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+    const res  = await fetch(url);
+    const json = await res.json();
+
+    osmNodes = json.elements.map(el => ({
+      id:   el.id,
+      lat:  el.lat,
+      lon:  el.lon,
+      type: el.tags?.highway === 'traffic_signals' ? 'signal' : 'stop',
+    }));
+
+    osmFetchedAt = Date.now();
+    setStatus('osm', 'ok', `OSM: ${osmNodes.length} nodes`);
+    evaluateMapAlerts();
+  } catch(e) {
+    setStatus('osm', 'err', 'OSM failed');
+    console.warn('OSM fetch error:', e);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  MAP ALERT EVALUATION
+// ═══════════════════════════════════════════════════════
+function evaluateMapAlerts() {
+  if (!gpsPos || !mapEnabled) return;
+  const { lat, lon, heading } = gpsPos;
+
+  const mapHits = [];
+
+  for (const node of osmNodes) {
+    const distM  = haversineM(lat, lon, node.lat, node.lon);
+    const distFt = distM / M_PER_FT;
+    if (distFt > 550 || distFt < 5) continue;
+
+    // Heading filter — only consider nodes roughly ahead of us
+    if (gpsPos.speedMph > 3) {
+      const bearing = bearingDeg(lat, lon, node.lat, node.lon);
+      const diff    = angleDiff(bearing, heading);
+      if (Math.abs(diff) > HEADING_CONE_DEG + 15) continue;
+    }
+
+    mapHits.push({ type: node.type, distFt: Math.round(distFt), nodeId: node.id, source: 'map' });
+  }
+
+  // Sort by distance
+  mapHits.sort((a, b) => a.distFt - b.distFt);
+  fusionMerge(mapHits, []);
+}
+
+// ═══════════════════════════════════════════════════════
+//  FUSION ENGINE
+// ═══════════════════════════════════════════════════════
+function fusionMerge(mapHits, camHits) {
+  const merged = [];
+
+  // Start with map hits (authoritative)
+  for (const m of mapHits) {
+    const entry = { ...m, confirmedByCam: false };
+
+    // Check if any cam hit is close enough to be the same object
+    for (const c of camHits) {
+      if (c.type === m.type && Math.abs(c.distFt - m.distFt) < FUSION_MATCH_FT) {
+        entry.confirmedByCam = true;
+        entry.camScore = c.score;
+        break;
+      }
+    }
+
+    entry.displaySource = entry.confirmedByCam ? 'both' : 'map';
+    merged.push(entry);
+  }
+
+  // Add camera-only hits (unmapped signs)
+  for (const c of camHits) {
+    const alreadyCovered = mapHits.some(m =>
+      m.type === c.type && Math.abs(m.distFt - c.distFt) < FUSION_MATCH_FT
+    );
+    if (!alreadyCovered) {
+      merged.push({ ...c, confirmedByCam: true, displaySource: 'cam', unverified: true });
+    }
+  }
+
+  // Sort by distance
+  merged.sort((a, b) => a.distFt - b.distFt);
+  activeAlerts = merged;
+
+  renderAlertCards(merged);
+  triggerVoiceAlerts(merged);
+}
+
+// ═══════════════════════════════════════════════════════
+//  ALERT CARDS
+// ═══════════════════════════════════════════════════════
+function renderAlertCards(alerts) {
+  alertWrap.innerHTML = '';
+  for (const a of alerts.slice(0, 3)) {
+    const card = document.createElement('div');
+    const distClass = a.distFt > 300 ? 'far' : a.distFt > 100 ? 'mid' : 'near';
+    const borderClass = a.unverified ? 'unverified' : a.type === 'signal' ? 'light' : '';
+    card.className = `alert-card ${borderClass}`;
+
+    const srcLabel = a.displaySource === 'both'
+      ? '<span class="src-badge src-both">MAP+CAM</span>'
+      : a.displaySource === 'map'
+        ? '<span class="src-badge src-map">MAP</span>'
+        : '<span class="src-badge src-cam">CAM</span>';
+
+    const icon     = a.type === 'stop' ? '🛑' : '🚦';
+    const typeLabel= a.type === 'stop' ? 'Stop sign' : 'Traffic signal';
+    const subNote  = a.unverified ? 'Not in map data — camera detected' : a.confirmedByCam ? 'Map + camera confirmed' : 'Map data';
+
+    card.innerHTML = `
+      <div class="alert-icon">${icon}</div>
+      <div class="alert-body">
+        <div class="alert-label">${typeLabel} ${srcLabel}</div>
+        <div class="alert-sub">${subNote}</div>
+      </div>
+      <div class="alert-dist ${distClass}">${Math.round(a.distFt)}<span style="font-size:11px;font-weight:400;color:var(--muted)"> ft</span></div>
+    `;
+    alertWrap.appendChild(card);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  VOICE ALERTS
+// ═══════════════════════════════════════════════════════
+function triggerVoiceAlerts(alerts) {
+  for (const a of alerts) {
+    const bracket = nearestBracket(a.distFt);
+    if (bracket === null) continue;
+
+    const key = `${a.type}-${a.nodeId || 'cam'}-${bracket}`;
+    const now = Date.now();
+    if (lastSpoken[key] && now - lastSpoken[key] < SPEAK_COOLDOWN_MS) continue;
+
+    lastSpoken[key] = now;
+    speak(buildUtterance(a));
+    break; // one alert per cycle, closest wins
+  }
+}
+
+function buildUtterance(a) {
+  const ft   = Math.round(a.distFt);
+  const type = a.type === 'stop' ? 'stop sign' : 'traffic signal';
+
+  if (ft >= 450) return `${type} ahead, ${ft} feet.`;
+  if (ft >= 300) return `${type}, ${ft} feet.`;
+  if (ft >= 150) return `${type} approaching, ${ft} feet. Prepare to stop.`;
+  if (ft >= 60)  return `${type}, ${ft} feet.`;
+  if (a.type === 'stop') return 'Stop sign. Please do not roll through.';
+  return 'Traffic signal. Watch the light.';
+}
+
+function speak(text) {
+  if (muted || !window.speechSynthesis) return;
+  const u   = new SpeechSynthesisUtterance(text);
+  u.rate    = 0.92;
+  u.pitch   = 1.0;
+  u.volume  = 1.0;
+  const voices = speechSynthesis.getVoices();
+  const en = voices.find(v => v.lang.startsWith('en') && v.localService);
+  if (en) u.voice = en;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+// ═══════════════════════════════════════════════════════
+//  UI CONTROLS
+// ═══════════════════════════════════════════════════════
+function toggleMute() {
+  muted = !muted;
+  document.getElementById('mute-icon').textContent = muted ? '🔇' : '🔊';
+  document.getElementById('btn-mute').classList.toggle('muted-btn', muted);
+  if (muted) speechSynthesis.cancel();
+}
+
+function toggleMap() {
+  mapEnabled = !mapEnabled;
+  btnMap.classList.toggle('active-map', mapEnabled);
+  document.getElementById('lbl-map').textContent = mapEnabled ? 'Map on' : 'Map off';
+  if (!mapEnabled) {
+    setStatus('osm', '', 'Map off');
+    osmNodes = [];
+  } else if (gpsPos) {
+    fetchOSMNodes(gpsPos.lat, gpsPos.lon);
+  }
+}
+
+function togglePanel() {
+  panelOpen = !panelOpen;
+  mapPanel.classList.toggle('hidden', !panelOpen);
+}
+
+// ═══════════════════════════════════════════════════════
+//  MAP PANEL UPDATE
+// ═══════════════════════════════════════════════════════
+function updateMapPanel() {
+  if (!panelOpen) return;
+  const ahead = activeAlerts.filter(a => a.distFt < 550);
+  document.getElementById('mp-signs').textContent   = ahead.length || '–';
+  document.getElementById('mp-nearest').textContent = ahead.length ? `${ahead[0].distFt} ft` : '–';
+  document.getElementById('mp-heading').textContent = gpsPos ? `${Math.round(gpsPos.heading)}°` : '–';
+  document.getElementById('mp-age').textContent     = osmFetchedAt
+    ? `${Math.round((Date.now() - osmFetchedAt) / 1000)}s ago`
+    : '–';
+}
+
+// ═══════════════════════════════════════════════════════
+//  HEADING CONE SVG
+// ═══════════════════════════════════════════════════════
+function updateCone(headingDeg) {
+  // Draw a small arc sector in the heading direction
+  const cx = 26, cy = 26, r = 20;
+  const halfAngle = HEADING_CONE_DEG;
+  // Convert heading (0=N, CW) to SVG angle (0=right, CCW = -90 offset)
+  const base = headingDeg - 90;
+  const a1 = (base - halfAngle) * Math.PI / 180;
+  const a2 = (base + halfAngle) * Math.PI / 180;
+  const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+  const x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2);
+  conePath.setAttribute('d', `M${cx},${cy} L${x1},${y1} A${r},${r} 0 0,1 ${x2},${y2} Z`);
+}
+
+// ═══════════════════════════════════════════════════════
+//  GEO MATH
+// ═══════════════════════════════════════════════════════
+function haversineM(lat1, lon1, lat2, lon2) {
+  const R  = 6371000;
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+  const a  = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+  const y  = Math.sin(Δλ) * Math.cos(φ2);
+  const x  = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+}
+
+function angleDiff(a, b) {
+  let d = ((a - b) + 360) % 360;
+  return d > 180 ? d - 360 : d;
+}
+
+function nearestBracket(ft) {
+  for (const b of ALERT_BRACKETS_FT) {
+    if (Math.abs(ft - b) <= BRACKET_WINDOW_FT) return b;
+  }
+  return null;
+}
+
+function estimateDist(px, realCm) {
+  return Math.round((realCm * FOCAL_PX) / Math.max(px, 1) / CM_PER_FT);
+}
+
+// ═══════════════════════════════════════════════════════
+//  STATUS HELPERS
+// ═══════════════════════════════════════════════════════
+function setStatus(which, state, text) {
+  const dot = document.getElementById(`${which}-dot`);
+  const txt = document.getElementById(`${which}-txt`);
+  if (dot) dot.className = `dot ${state}`;
+  if (txt) txt.textContent = text;
+}
+
+function showLoading(msg) { loadMsg.textContent = msg; loadingEl.classList.remove('hidden'); }
+function hideLoading()    { loadingEl.classList.add('hidden'); }
+
+// ═══════════════════════════════════════════════════════
+//  DEMO MODE
+// ═══════════════════════════════════════════════════════
+const DEMO_STEPS = [
+  { label:'Driving down Oak Street…', mapHits:[{type:'stop',  distFt:510, nodeId:'d1', source:'map'}], camHits:[] },
+  { label:'Getting closer…',          mapHits:[{type:'stop',  distFt:390, nodeId:'d1', source:'map'}], camHits:[{type:'stop', distFt:370, score:.91, source:'cam'}] },
+  { label:'Map + camera confirm',     mapHits:[{type:'stop',  distFt:200, nodeId:'d1', source:'map'}], camHits:[{type:'stop', distFt:210, score:.94, source:'cam'}] },
+  { label:'Traffic light ahead',      mapHits:[{type:'signal',distFt:440, nodeId:'d2', source:'map'}], camHits:[] },
+  { label:'Unmapped sign detected!',  mapHits:[], camHits:[{type:'stop', distFt:130, score:.87, source:'cam'}] },
+  { label:'Stop sign, last warning',  mapHits:[{type:'stop',  distFt:45,  nodeId:'d1', source:'map'}], camHits:[{type:'stop', distFt:50,  score:.96, source:'cam'}] },
+];
+
+let demoIdx = 0;
+function runDemo() {
+  stopDemo();
+  demoIdx = 0;
+  // Fake GPS
+  setStatus('gps', 'ok', 'Demo GPS');
+  setStatus('osm', 'ok', 'Demo OSM');
+  setStatus('cam', camEnabled ? 'pulse' : '', camEnabled ? 'Demo Cam' : 'Cam off');
+  updateCone(45);
+  speedPill.textContent = '28 mph';
+
+  function step() {
+    if (demoIdx >= DEMO_STEPS.length) { alertWrap.innerHTML = ''; return; }
+    const s = DEMO_STEPS[demoIdx++];
+    fusionMerge(s.mapHits, s.camHits);
+    demoTimer = setTimeout(step, 4000);
+  }
+  step();
+}
+
+function stopDemo() {
+  if (demoTimer) { clearTimeout(demoTimer); demoTimer = null; }
+}
+
+// ═══════════════════════════════════════════════════════
+//  SERVICE WORKER + VOICE PREWARM
+// ═══════════════════════════════════════════════════════
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+if (window.speechSynthesis) {
+  speechSynthesis.getVoices();
+  speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+}
+</script>
+</body>
+</html>
