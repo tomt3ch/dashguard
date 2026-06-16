@@ -899,13 +899,15 @@ async function fetchOSMNodes(lat, lon) {
   }
 
   // No cache — live Overpass query
+  // Fetch nodes AND the ways they belong to — needed to determine which road
+  // the sign faces, so we don't alert for signs on cross streets
   setStatus('osm','warn','Fetching OSM…');
   const r=CFG.OSM_RADIUS_M;
   const q=`[out:json][timeout:20];(`
     +`node["highway"="stop"](around:${r},${lat},${lon});`
     +`node["highway"="traffic_signals"](around:${r},${lat},${lon});`
     +`node["highway"="give_way"](around:${r},${lat},${lon});`
-    +`);out body;`;
+    +`);out body;>;out skel qt;`;
   try {
     const res  = await fetch('https://overpass-api.de/api/interpreter', {
       method:'POST',
@@ -914,7 +916,43 @@ async function fetchOSMNodes(lat, lon) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    osmNodes   = (json.elements||[]).map(toNode);
+
+    // Build a map of nodeId → list of ways that contain it
+    // Each way gives us two adjacent node coords to compute road bearing
+    const nodeCoords = {};
+    const nodeWays   = {}; // nodeId → [{bearing}]
+
+    for (const el of json.elements) {
+      if (el.type === 'node') nodeCoords[el.id] = {lat:el.lat, lon:el.lon};
+    }
+    for (const el of json.elements) {
+      if (el.type !== 'way' || !el.nodes) continue;
+      // Compute the bearing of this way from its first two known coords
+      for (let i = 0; i < el.nodes.length - 1; i++) {
+        const a = nodeCoords[el.nodes[i]];
+        const b = nodeCoords[el.nodes[i+1]];
+        if (!a || !b) continue;
+        const brg = bearingDeg(a.lat, a.lon, b.lat, b.lon);
+        // Store both the forward and reverse bearing (road goes both ways)
+        for (const nid of el.nodes) {
+          if (!nodeWays[nid]) nodeWays[nid] = [];
+          nodeWays[nid].push(brg);
+          nodeWays[nid].push((brg + 180) % 360);
+        }
+        break; // one segment per way is enough
+      }
+    }
+
+    osmNodes = json.elements
+      .filter(el => el.type==='node' && el.tags?.highway)
+      .map(el => ({
+        id:       el.id,
+        lat:      el.lat,
+        lon:      el.lon,
+        type:     el.tags.highway==='traffic_signals' ? 'signal' : 'stop',
+        wayBearings: nodeWays[el.id] || null, // road directions this sign faces
+      }));
+
     osmFetchedAt=Date.now();
     setStatus('osm','ok',`OSM: ${osmNodes.length}`);
     evaluateMapAlerts();
@@ -959,6 +997,14 @@ function evaluateMapAlerts() {
       const bearing = bearingDeg(lat, lon, node.lat, node.lon);
       const diff    = angleDiff(bearing, heading);
       if (Math.abs(diff) > CFG.HEADING_CONE_DEG) continue;
+
+      // Way-bearing check: if we know which road(s) this sign is on,
+      // verify at least one of those roads is roughly aligned with our heading.
+      // This filters signs on cross streets that happen to be geometrically ahead.
+      if (node.wayBearings && node.wayBearings.length > 0) {
+        const aligned = node.wayBearings.some(wb => Math.abs(angleDiff(wb, heading)) < 40);
+        if (!aligned) continue;
+      }
     }
 
     hits.push({type:node.type, distFt:Math.round(distFt), nodeId:node.id, source:'map'});
@@ -1047,11 +1093,14 @@ function roundToEven(ft) {
 }
 
 function buildUtterance(a) {
-  const ft   = roundToEven(Math.round(a.distFt));
-  const word = a.type === 'stop' ? 'Stop' : 'Signal';
-  if (ft <= 100 && a.type === 'stop') return 'Do not roll through the stop sign.';
-  if (ft >= 50) return `${word}, ${ft} feet.`;
-  return a.type === 'stop' ? 'Stop.' : 'Signal.';
+  const ft = roundToEven(Math.round(a.distFt));
+  if (a.type === 'stop') {
+    if (ft <= 100) return 'Do not roll through the stop sign.';
+    return `Stop sign, ${ft} feet.`;
+  } else {
+    // traffic signal — never say "stop", just warn
+    return `Traffic light, ${ft} feet.`;
+  }
 }
 // ═══════════════════════════════════
 //  VOICE — Web Speech API (device TTS, no internet)
@@ -1249,7 +1298,7 @@ async function downloadBBox(bbox, label, onProgress) {
         +`node["highway"="stop"](${box});`
         +`node["highway"="traffic_signals"](${box});`
         +`node["highway"="give_way"](${box});`
-        +`);out body;`;
+        +`);out body;>;out skel qt;`;
       try {
         const res=await fetch('https://overpass-api.de/api/interpreter',{
           method:'POST',
@@ -1258,7 +1307,35 @@ async function downloadBBox(bbox, label, onProgress) {
         });
         if (res.ok) {
           const json=await res.json();
-          if (json.elements) json.elements.forEach(el=>all.set(el.id,toNode(el)));
+          // Build node coords and way bearings
+          const nc={};
+          const nw={};
+          for (const el of json.elements) {
+            if (el.type==='node') nc[el.id]={lat:el.lat,lon:el.lon};
+          }
+          for (const el of json.elements) {
+            if (el.type!=='way'||!el.nodes) continue;
+            for (let i=0;i<el.nodes.length-1;i++) {
+              const a=nc[el.nodes[i]], b=nc[el.nodes[i+1]];
+              if (!a||!b) continue;
+              const brg=bearingDeg(a.lat,a.lon,b.lat,b.lon);
+              for (const nid of el.nodes) {
+                if (!nw[nid]) nw[nid]=[];
+                nw[nid].push(brg);
+                nw[nid].push((brg+180)%360);
+              }
+              break;
+            }
+          }
+          for (const el of json.elements) {
+            if (el.type==='node'&&el.tags?.highway) {
+              all.set(el.id,{
+                id:el.id, lat:el.lat, lon:el.lon,
+                type:el.tags.highway==='traffic_signals'?'signal':'stop',
+                wayBearings: nw[el.id]||null,
+              });
+            }
+          }
         } else {
           console.warn(`Chunk HTTP ${res.status}`);
         }
