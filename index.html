@@ -13,153 +13,199 @@
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     :root{
-      --red:#E24B4A;--amber:#EF9F27;--green:#4CAF50;--blue:#378ADD;--teal:#1D9E75;
-      --bg:#0a0a0a;--surface:#141414;--surface2:#1e1e1e;
-      --border:rgba(255,255,255,0.08);--border2:rgba(255,255,255,0.14);
-      --text:#fff;--muted:rgba(255,255,255,0.45);--muted2:rgba(255,255,255,0.25);
+      --red:#E24B4A;--amber:#EF9F27;--green:#4CAF50;--blue:#378ADD;
+      --bg:#0a0a0a;--surface:#141414;--surface2:#1c1c1c;
+      --border:rgba(255,255,255,0.08);--border2:rgba(255,255,255,0.15);
+      --text:#fff;--muted:rgba(255,255,255,0.45);--muted2:rgba(255,255,255,0.22);
       --safe-top:env(safe-area-inset-top,0px);--safe-bot:env(safe-area-inset-bottom,0px);
     }
     html,body{height:100%;background:var(--bg);color:var(--text);
       font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;
       overflow:hidden;-webkit-tap-highlight-color:transparent;user-select:none;}
-
-    /* ── Layout ── */
     #app{display:flex;flex-direction:column;height:100dvh;
       padding-top:var(--safe-top);padding-bottom:var(--safe-bot);}
 
-    /* ── Camera ── */
+    /* camera */
     #cam-wrap{position:relative;flex:1;background:#000;overflow:hidden;}
     #cam{width:100%;height:100%;object-fit:cover;display:block;}
     #overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;}
 
-    /* ── HUD top bar ── */
-    #hud-top{
-      position:absolute;top:12px;left:12px;right:12px;
-      display:flex;align-items:center;gap:8px;z-index:5;
-    }
-    .pill{
-      display:flex;align-items:center;gap:5px;
-      background:rgba(0,0,0,0.72);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    /* hud top */
+    #hud-top{position:absolute;top:12px;left:12px;right:12px;
+      display:flex;align-items:center;gap:6px;z-index:5;flex-wrap:wrap;}
+    .pill{display:flex;align-items:center;gap:5px;
+      background:rgba(0,0,0,0.75);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
       border:0.5px solid var(--border);border-radius:100px;
-      padding:5px 10px 5px 7px;font-size:11px;color:var(--muted);white-space:nowrap;
-    }
+      padding:5px 10px 5px 7px;font-size:11px;color:var(--muted);white-space:nowrap;}
     .dot{width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0;}
     .dot.ok{background:var(--green);}
     .dot.warn{background:var(--amber);animation:blink 1.2s infinite;}
     .dot.err{background:var(--red);}
     .dot.pulse{background:var(--green);animation:blink 2s infinite;}
     @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
-
     #speed-pill{margin-left:auto;font-size:13px;font-weight:600;color:var(--text);}
 
-    /* ── Source badge ── */
-    .src-badge{
-      display:inline-block;font-size:9px;font-weight:700;letter-spacing:.5px;
-      padding:1px 5px;border-radius:4px;margin-left:4px;vertical-align:middle;
-    }
+    /* badges */
+    .src-badge{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.5px;
+      padding:1px 5px;border-radius:4px;margin-left:4px;vertical-align:middle;}
     .src-map{background:rgba(55,138,221,0.3);color:#7db8e8;}
     .src-cam{background:rgba(239,159,39,0.3);color:#f0b84a;}
-    .src-both{background:rgba(29,158,117,0.3);color:#4ecba5;}
+    .src-both{background:rgba(76,175,80,0.3);color:#7ed47f;}
 
-    /* ── Alert cards ── */
-    #alert-wrap{
-      position:absolute;bottom:14px;left:12px;right:12px;
-      display:flex;flex-direction:column;gap:8px;z-index:5;
-    }
-
-    .alert-card{
-      display:flex;align-items:center;gap:12px;
-      background:rgba(10,10,10,0.82);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-      border-radius:14px;padding:12px 14px;
-      border-left:3px solid var(--red);
-      animation:slideUp .2s ease;
-    }
-    .alert-card.light{border-left-color:var(--blue);}
-    .alert-card.unverified{border-left-color:var(--amber);}
+    /* alert cards */
+    #alert-wrap{position:absolute;bottom:14px;left:12px;right:12px;
+      display:flex;flex-direction:column;gap:8px;z-index:5;}
+    .alert-card{display:flex;align-items:center;gap:12px;
+      background:rgba(10,10,10,0.84);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+      border-radius:14px;padding:12px 14px;border-left:3px solid var(--red);
+      animation:slideUp .2s ease;}
+    .alert-card.signal{border-left-color:var(--blue);}
+    .alert-card.camonly{border-left-color:var(--amber);}
     @keyframes slideUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-
     .alert-icon{font-size:24px;flex-shrink:0;}
     .alert-body{flex:1;min-width:0;}
     .alert-label{font-size:15px;font-weight:600;letter-spacing:-.2px;}
     .alert-sub{font-size:11px;color:var(--muted);margin-top:2px;}
-    .alert-dist{font-size:22px;font-weight:700;letter-spacing:-1px;color:var(--text);min-width:64px;text-align:right;}
-
-    /* Urgency colour on distance */
+    .alert-dist{font-size:22px;font-weight:700;letter-spacing:-1px;min-width:64px;text-align:right;}
     .alert-dist.far{color:var(--muted);}
     .alert-dist.mid{color:var(--amber);}
     .alert-dist.near{color:var(--red);}
 
-    /* ── Bottom bar ── */
-    #bottom{
-      flex-shrink:0;background:var(--surface);
-      border-top:0.5px solid var(--border);
-      padding:10px 12px;display:flex;gap:8px;align-items:stretch;
-    }
-    .btn{
-      flex:1;background:rgba(255,255,255,0.05);
-      border:0.5px solid var(--border);border-radius:12px;
-      color:var(--text);font-size:11px;font-family:inherit;
-      padding:9px 6px;cursor:pointer;
-      display:flex;flex-direction:column;align-items:center;gap:3px;
-      -webkit-appearance:none;transition:background .12s;
-    }
+    /* bottom bar */
+    #bottom{flex-shrink:0;background:var(--surface);border-top:0.5px solid var(--border);
+      padding:10px 12px;display:flex;gap:8px;}
+    .btn{flex:1;background:rgba(255,255,255,0.05);border:0.5px solid var(--border);
+      border-radius:12px;color:var(--text);font-size:11px;font-family:inherit;
+      padding:9px 4px;cursor:pointer;display:flex;flex-direction:column;
+      align-items:center;gap:3px;-webkit-appearance:none;transition:background .12s;}
     .btn:active{background:rgba(255,255,255,0.12);}
     .btn .bi{font-size:20px;}
-    .btn.active-cam{background:rgba(226,75,74,.15);border-color:rgba(226,75,74,.35);color:var(--red);}
-    .btn.active-map{background:rgba(55,138,221,.15);border-color:rgba(55,138,221,.35);color:var(--blue);}
-    .btn.muted-btn{color:var(--amber);}
+    .btn.on-cam{background:rgba(226,75,74,.15);border-color:rgba(226,75,74,.35);color:var(--red);}
+    .btn.on-map{background:rgba(55,138,221,.15);border-color:rgba(55,138,221,.35);color:var(--blue);}
+    .btn.is-muted{color:var(--amber);}
 
-    /* ── Start screen ── */
-    #start{
-      position:absolute;inset:0;z-index:20;background:var(--bg);
-      display:flex;flex-direction:column;align-items:center;justify-content:center;
-      gap:20px;padding:32px;
+    /* ── Info panel ── */
+    #info-panel{
+      position:absolute;bottom:0;left:0;right:0;z-index:10;
+      background:var(--surface);border-top:0.5px solid var(--border2);
+      border-radius:20px 20px 0 0;
+      padding:0 0 var(--safe-bot);
+      transform:translateY(100%);
+      transition:transform .28s cubic-bezier(.4,0,.2,1);
     }
+    #info-panel.open{transform:translateY(0);}
+    .panel-handle{width:36px;height:4px;background:var(--border2);border-radius:2px;
+      margin:10px auto 0;}
+    .panel-tabs{display:flex;border-bottom:0.5px solid var(--border);margin-top:10px;}
+    .ptab{flex:1;padding:10px 0;font-size:12px;color:var(--muted);text-align:center;
+      background:none;border:none;font-family:inherit;cursor:pointer;border-bottom:2px solid transparent;transition:color .15s;}
+    .ptab.active{color:var(--text);border-bottom-color:var(--blue);}
+    .panel-body{padding:14px 16px 16px;max-height:52vh;overflow-y:auto;}
+    .tab-pane{display:none;}
+    .tab-pane.active{display:block;}
+
+    /* status tab */
+    .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+    .stat-card{background:var(--surface2);border-radius:10px;padding:10px 12px;}
+    .stat-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}
+    .stat-val{font-size:16px;font-weight:600;}
+
+    /* cache tab */
+    .cache-section{margin-bottom:16px;}
+    .cache-section h3{font-size:12px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.5px;margin-bottom:10px;}
+    .cache-row{display:flex;justify-content:space-between;align-items:center;
+      font-size:13px;padding:4px 0;color:var(--muted);}
+    .cache-row .cv{color:var(--text);font-weight:500;}
+
+    /* region search */
+    .field-row{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;}
+    .field-row label{font-size:11px;color:var(--muted);}
+    .field-row input, .field-row select{
+      width:100%;background:var(--surface2);border:0.5px solid var(--border2);
+      border-radius:8px;padding:9px 12px;font-size:14px;font-family:inherit;
+      color:var(--text);-webkit-appearance:none;outline:none;}
+    .field-row input::placeholder{color:var(--muted2);}
+    .field-row input:focus{border-color:rgba(55,138,221,.6);}
+
+    .dl-btn{width:100%;padding:12px;border-radius:10px;
+      background:rgba(55,138,221,.2);border:0.5px solid rgba(55,138,221,.5);
+      color:#7db8e8;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer;
+      transition:background .15s;}
+    .dl-btn:active{background:rgba(55,138,221,.35);}
+    .dl-btn:disabled{opacity:.4;cursor:default;}
+    .dl-btn.danger{background:rgba(226,75,74,.15);border-color:rgba(226,75,74,.4);color:#e88;}
+    .dl-btn.danger:active{background:rgba(226,75,74,.3);}
+
+    #dl-progress{margin-top:10px;font-size:12px;color:var(--muted);
+      text-align:center;min-height:18px;line-height:1.5;}
+
+    .region-list{margin-top:12px;display:flex;flex-direction:column;gap:6px;}
+    .region-item{display:flex;align-items:center;justify-content:space-between;
+      background:var(--surface2);border-radius:8px;padding:9px 12px;font-size:12px;}
+    .region-name{color:var(--text);font-weight:500;}
+    .region-meta{color:var(--muted);font-size:11px;margin-top:1px;}
+    .region-del{background:none;border:none;color:var(--red);font-size:18px;
+      cursor:pointer;padding:0 0 0 10px;line-height:1;}
+
+    /* progress bar */
+    .prog-bar{height:3px;background:var(--border2);border-radius:2px;margin-top:8px;overflow:hidden;}
+    .prog-fill{height:100%;background:var(--blue);border-radius:2px;width:0%;transition:width .3s;}
+
+    /* camera tab */
+    .lens-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px;}
+    .lens-btn{background:var(--surface2);border:0.5px solid var(--border2);border-radius:10px;
+      padding:12px 6px;cursor:pointer;font-family:inherit;color:var(--muted);
+      display:flex;flex-direction:column;align-items:center;gap:4px;transition:all .15s;}
+    .lens-btn:active{opacity:.7;}
+    .lens-btn.selected{background:rgba(55,138,221,.15);border-color:rgba(55,138,221,.5);color:var(--text);}
+    .lens-btn.unavailable{opacity:.3;cursor:default;pointer-events:none;}
+    .lens-zoom{font-size:20px;font-weight:700;color:inherit;}
+    .lens-name{font-size:10px;}
+    .lens-note{font-size:10px;color:var(--muted2);text-align:center;margin-top:2px;}
+    .slider-row{margin-bottom:14px;}
+    .slider-row label{display:flex;justify-content:space-between;align-items:center;
+      font-size:12px;color:var(--muted);margin-bottom:6px;}
+    .slider-row label span{color:var(--text);font-weight:600;font-size:13px;}
+    .slider-row input[type=range]{width:100%;accent-color:var(--blue);}
+    .cam-note{font-size:11px;color:var(--muted2);line-height:1.5;
+      background:var(--surface2);border-radius:8px;padding:8px 10px;margin-top:4px;}
+
+    /* heading ring */
+    #heading-ring{position:absolute;bottom:20px;right:16px;z-index:6;width:52px;height:52px;}
+
+    /* start screen */
+    #start{position:absolute;inset:0;z-index:20;background:var(--bg);
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      gap:20px;padding:32px;}
     #start h1{font-size:36px;font-weight:700;letter-spacing:-2px;}
     #start h1 span{color:var(--red);}
     #start p{font-size:14px;color:var(--muted);text-align:center;line-height:1.6;max-width:300px;}
     .feat-list{display:flex;flex-direction:column;gap:9px;width:100%;max-width:310px;}
-    .feat{display:flex;align-items:flex-start;gap:10px;font-size:13px;color:rgba(255,255,255,.7);line-height:1.4;}
-    .feat-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:4px;}
-    .fd-blue{background:var(--blue);}
-    .fd-amber{background:var(--amber);}
-    .fd-green{background:var(--green);}
-    .big-btn{
-      width:100%;max-width:310px;background:var(--blue);color:#fff;
+    .feat{display:flex;align-items:flex-start;gap:10px;font-size:13px;
+      color:rgba(255,255,255,.7);line-height:1.5;}
+    .feat-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:5px;}
+    .fd-b{background:var(--blue);}.fd-a{background:var(--amber);}.fd-g{background:var(--green);}
+    .big-btn{width:100%;max-width:310px;background:var(--blue);color:#fff;
       border:none;border-radius:14px;font-size:16px;font-weight:600;
-      font-family:inherit;padding:15px;cursor:pointer;
-    }
+      font-family:inherit;padding:15px;cursor:pointer;}
     .big-btn:active{opacity:.82;}
-    .demo-link{font-size:13px;color:var(--muted);background:none;border:none;font-family:inherit;cursor:pointer;text-decoration:underline;}
 
-    /* ── Loading overlay ── */
-    #loading{
-      position:absolute;inset:0;z-index:15;background:rgba(10,10,10,.9);
-      display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
-    }
+    /* loading */
+    #loading{position:absolute;inset:0;z-index:15;background:rgba(10,10,10,.9);
+      display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;}
     #loading.hidden{display:none;}
-    .spinner{width:34px;height:34px;border:2px solid rgba(255,255,255,.1);border-top-color:var(--blue);border-radius:50%;animation:spin .75s linear infinite;}
+    .spinner{width:34px;height:34px;border:2px solid rgba(255,255,255,.1);
+      border-top-color:var(--blue);border-radius:50%;animation:spin .75s linear infinite;}
     @keyframes spin{to{transform:rotate(360deg)}}
-    #load-msg{font-size:13px;color:var(--muted);text-align:center;padding:0 24px;line-height:1.5;}
+    #load-msg{font-size:13px;color:var(--muted);text-align:center;padding:0 24px;line-height:1.6;}
 
-    /* ── Map layer info panel (collapsible) ── */
-    #map-panel{
-      position:absolute;top:52px;right:12px;z-index:6;
-      background:rgba(10,10,10,.82);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-      border:0.5px solid var(--border);border-radius:12px;
-      padding:10px 12px;width:180px;
-      font-size:11px;color:var(--muted);
-      transition:opacity .2s;
-    }
-    #map-panel.hidden{display:none;}
-    #map-panel .mp-row{display:flex;justify-content:space-between;margin-bottom:4px;}
-    #map-panel .mp-val{color:var(--text);font-weight:600;}
-
-    /* ── Heading cone indicator ── */
-    #heading-ring{
-      position:absolute;bottom:20px;right:16px;z-index:6;
-      width:52px;height:52px;
-    }
+    /* debug */
+    #debug{position:absolute;top:80px;left:12px;z-index:7;
+      background:rgba(0,0,0,.85);border:0.5px solid var(--border);border-radius:8px;
+      padding:8px 10px;font-size:10px;font-family:monospace;color:#0f0;
+      max-width:210px;line-height:1.5;white-space:pre-wrap;pointer-events:none;}
+    #debug.hidden{display:none;}
   </style>
 </head>
 <body>
@@ -168,56 +214,151 @@
     <video id="cam" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
 
-    <!-- HUD top -->
     <div id="hud-top">
       <div class="pill"><div class="dot" id="gps-dot"></div><span id="gps-txt">GPS…</span></div>
       <div class="pill"><div class="dot" id="osm-dot"></div><span id="osm-txt">OSM…</span></div>
       <div class="pill"><div class="dot" id="cam-dot"></div><span id="cam-txt">Cam…</span></div>
-      <div class="pill" id="speed-pill">– mph</div>
+      <div class="pill" id="speed-pill" onclick="tapSpeed()">– mph</div>
     </div>
 
-    <!-- Map info panel -->
-    <div id="map-panel" class="hidden">
-      <div class="mp-row"><span>Signs ahead</span><span class="mp-val" id="mp-signs">–</span></div>
-      <div class="mp-row"><span>Nearest</span><span class="mp-val" id="mp-nearest">–</span></div>
-      <div class="mp-row"><span>Heading</span><span class="mp-val" id="mp-heading">–</span></div>
-      <div class="mp-row"><span>OSM age</span><span class="mp-val" id="mp-age">–</span></div>
-    </div>
-
-    <!-- Alert cards -->
     <div id="alert-wrap"></div>
+    <div id="debug" class="hidden"></div>
 
-    <!-- Heading ring SVG -->
     <svg id="heading-ring" viewBox="0 0 52 52">
-      <circle cx="26" cy="26" r="23" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="1"/>
-      <path id="cone-path" fill="rgba(55,138,221,.25)" stroke="rgba(55,138,221,.6)" stroke-width=".5"/>
+      <circle cx="26" cy="26" r="23" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="1"/>
+      <path id="cone-path" fill="rgba(55,138,221,.2)" stroke="rgba(55,138,221,.5)" stroke-width=".5"/>
       <circle cx="26" cy="26" r="3" fill="var(--blue)"/>
+      <text x="26" y="9" text-anchor="middle" font-size="7" fill="rgba(255,255,255,.4)">N</text>
     </svg>
 
-    <!-- Loading -->
     <div id="loading">
       <div class="spinner"></div>
       <div id="load-msg">Starting up…</div>
     </div>
   </div>
 
-  <!-- Bottom controls -->
+  <!-- Bottom bar: 4 buttons only, no demo -->
   <div id="bottom">
     <button class="btn" id="btn-cam" onclick="toggleCamera()">
       <span class="bi">📷</span><span id="lbl-cam">Camera</span>
     </button>
-    <button class="btn" id="btn-map" onclick="toggleMap()">
-      <span class="bi">🗺️</span><span id="lbl-map">Map layer</span>
+    <button class="btn on-map" id="btn-map" onclick="toggleMap()">
+      <span class="bi">🗺️</span><span id="lbl-map">Map on</span>
     </button>
     <button class="btn" id="btn-mute" onclick="toggleMute()">
       <span class="bi" id="mute-icon">🔊</span><span>Voice</span>
     </button>
-    <button class="btn" id="btn-info" onclick="togglePanel()">
+    <button class="btn" onclick="togglePanel()">
       <span class="bi">📊</span><span>Info</span>
     </button>
-    <button class="btn" onclick="runDemo()">
-      <span class="bi">🎬</span><span>Demo</span>
-    </button>
+  </div>
+</div>
+
+<!-- Info panel (slides up) -->
+<div id="info-panel">
+  <div class="panel-handle"></div>
+  <div class="panel-tabs">
+    <button class="ptab active" onclick="switchTab('status')">Status</button>
+    <button class="ptab" onclick="switchTab('cache')">Map cache</button>
+    <button class="ptab" onclick="switchTab('camera')">Camera</button>
+  </div>
+  <div class="panel-body">
+
+    <!-- Status tab -->
+    <div class="tab-pane active" id="tab-status">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-label">Signs ahead</div><div class="stat-val" id="st-signs">–</div></div>
+        <div class="stat-card"><div class="stat-label">Nearest</div><div class="stat-val" id="st-nearest">–</div></div>
+        <div class="stat-card"><div class="stat-label">Speed</div><div class="stat-val" id="st-speed">–</div></div>
+        <div class="stat-card"><div class="stat-label">Heading</div><div class="stat-val" id="st-heading">–</div></div>
+        <div class="stat-card"><div class="stat-label">GPS accuracy</div><div class="stat-val" id="st-acc">–</div></div>
+        <div class="stat-card"><div class="stat-label">Heading src</div><div class="stat-val" id="st-hsrc">–</div></div>
+      </div>
+      <div class="cache-section">
+        <h3>OSM data</h3>
+        <div class="cache-row"><span>Nodes loaded</span><span class="cv" id="st-nodes">–</span></div>
+        <div class="cache-row"><span>Last query</span><span class="cv" id="st-age">–</span></div>
+        <div class="cache-row"><span>Cached regions</span><span class="cv" id="st-regions">–</span></div>
+        <div class="cache-row"><span>Cached nodes</span><span class="cv" id="st-cnodes">–</span></div>
+      </div>
+    </div>
+
+    <!-- Cache tab -->
+    <div class="tab-pane" id="tab-cache">
+
+      <div class="cache-section">
+        <h3>Download by region</h3>
+        <div class="field-row">
+          <label>State</label>
+          <input type="text" id="inp-state" placeholder="e.g. New Jersey" autocomplete="off" autocorrect="off"/>
+        </div>
+        <div class="field-row">
+          <label>County <span style="color:var(--muted2)">(optional — leave blank for full state)</span></label>
+          <input type="text" id="inp-county" placeholder="e.g. Bergen County" autocomplete="off" autocorrect="off"/>
+        </div>
+        <button class="dl-btn" id="btn-dl" onclick="downloadRegion()">⬇ Download region</button>
+        <div id="dl-progress"></div>
+        <div class="prog-bar hidden" id="prog-bar"><div class="prog-fill" id="prog-fill"></div></div>
+      </div>
+
+      <div class="cache-section">
+        <h3>Around current location</h3>
+        <div style="display:flex;gap:8px;">
+          <button class="dl-btn" style="font-size:12px;" onclick="downloadRadius(2)">2 km</button>
+          <button class="dl-btn" style="font-size:12px;" onclick="downloadRadius(5)">5 km</button>
+          <button class="dl-btn" style="font-size:12px;" onclick="downloadRadius(15)">15 km</button>
+        </div>
+      </div>
+
+      <div class="cache-section">
+        <h3>Downloaded regions</h3>
+        <div id="region-list" class="region-list">
+          <div style="font-size:12px;color:var(--muted)">No regions cached yet.</div>
+        </div>
+        <button class="dl-btn danger" style="margin-top:12px;font-size:12px;" onclick="clearAllCache()">🗑 Clear all cached data</button>
+      </div>
+
+    </div>
+
+    <!-- Camera tab -->
+    <div class="tab-pane" id="tab-camera">
+
+      <div class="cache-section">
+        <h3>Lens selection</h3>
+        <div class="lens-grid" id="lens-grid">
+          <div style="font-size:12px;color:var(--muted);grid-column:1/-1">Start camera first to see available lenses.</div>
+        </div>
+        <div class="cam-note">Use <strong>1x (main)</strong> for best all-around range. <strong>2x or 3x telephoto</strong> sees signs earliest — ideal for highway speeds. Avoid ultrawide (0.5x) — distant objects are too small to detect.</div>
+      </div>
+
+      <div class="cache-section">
+        <h3>Detection sensitivity</h3>
+        <div class="slider-row">
+          <label>Confidence threshold <span id="lbl-conf">40%</span></label>
+          <input type="range" id="sl-conf" min="20" max="70" value="40" step="5"
+            oninput="updateConf(this.value)"/>
+        </div>
+        <div class="cam-note">Lower catches more distant signs but risks false positives. 30–40% recommended. 25% for telephoto (less noise at range).</div>
+      </div>
+
+      <div class="cache-section">
+        <h3>Focal length calibration</h3>
+        <div class="slider-row">
+          <label>Focal length (px) <span id="lbl-focal">700</span></label>
+          <input type="range" id="sl-focal" min="300" max="1600" value="700" step="50"
+            oninput="updateFocal(this.value)"/>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="dl-btn" style="font-size:11px;padding:8px 4px;" onclick="setFocalPreset('ultrawide')">0.5x<br><span style="font-size:9px;opacity:.6">350px</span></button>
+          <button class="dl-btn" style="font-size:11px;padding:8px 4px;" onclick="setFocalPreset('main')">1x<br><span style="font-size:9px;opacity:.6">700px</span></button>
+          <button class="dl-btn" style="font-size:11px;padding:8px 4px;" onclick="setFocalPreset('tele2')">2x<br><span style="font-size:9px;opacity:.6">1100px</span></button>
+          <button class="dl-btn" style="font-size:11px;padding:8px 4px;" onclick="setFocalPreset('tele3')">3x<br><span style="font-size:9px;opacity:.6">1500px</span></button>
+        </div>
+        <div class="cam-note" style="margin-top:8px;">Auto-set when selecting a lens. Adjust if distance estimates feel too near or too far.</div>
+      </div>
+
+    </div>
+
   </div>
 </div>
 
@@ -226,37 +367,45 @@
   <h1>Dash<span>Guard</span></h1>
   <p>Map-primary detection with camera verification. Works in rain, fog, and at night.</p>
   <div class="feat-list">
-    <div class="feat"><div class="feat-dot fd-blue"></div><span><strong>Primary:</strong> OpenStreetMap queries stop signs &amp; signals ahead of you — exact GPS distance</span></div>
-    <div class="feat"><div class="feat-dot fd-amber"></div><span><strong>Secondary:</strong> Live camera catches unmapped signs &amp; verifies map data</span></div>
-    <div class="feat"><div class="feat-dot fd-green"></div><span><strong>Resilient:</strong> Bad weather degrades camera only — map keeps warning you</span></div>
+    <div class="feat"><div class="feat-dot fd-b"></div><span><strong>Primary:</strong> OpenStreetMap gives you exact GPS distance to every stop sign and traffic signal</span></div>
+    <div class="feat"><div class="feat-dot fd-a"></div><span><strong>Secondary:</strong> Camera catches unmapped signs and verifies map data in real time</span></div>
+    <div class="feat"><div class="feat-dot fd-g"></div><span><strong>Offline:</strong> Download your county or state once, drive without any internet</span></div>
   </div>
   <button class="big-btn" onclick="initApp()">Allow Camera &amp; GPS — Start</button>
-  <button class="demo-link" onclick="startDemo()">Try demo first →</button>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 <script>
-// ═══════════════════════════════════════════════════════
-//  CONSTANTS
-// ═══════════════════════════════════════════════════════
-const OSM_QUERY_RADIUS_M  = 600;   // query circle around current position
-const OSM_REFRESH_DIST_M  = 200;   // re-query when moved this far from last query point
-const HEADING_CONE_DEG    = 50;    // half-angle of "ahead" cone each side
-const ALERT_BRACKETS_FT   = [500, 400, 300, 200, 150, 100, 50];
-const BRACKET_WINDOW_FT   = 30;
-const SPEAK_COOLDOWN_MS   = 8000;
-const CAM_CONF_MIN        = 0.42;
-const STOP_W_CM           = 76.2;
-const LIGHT_H_CM          = 114;
-const FOCAL_PX            = 700;
-const CM_PER_FT           = 30.48;
-const M_PER_FT            = 0.3048;
-const FUSION_MATCH_FT     = 80;    // distance within which map+cam are same object
+// ═══════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════
+const CFG = {
+  OSM_RADIUS_M:      800,
+  OSM_REFRESH_M:     150,
+  ALERT_MAX_FT:      600,
+  ALERT_MIN_FT:      8,
+  HEADING_CONE_DEG:  65,
+  HEADING_MIN_MPH:   5,
+  BRACKETS_FT:       [500,400,300,200,150,100,50],
+  BRACKET_WIN_FT:    30,
+  SPEAK_COOLDOWN_MS: 8000,
+  CAM_CONF_MIN:      0.40,
+  STOP_W_CM:         76.2,
+  LIGHT_H_CM:        114,
+  FOCAL_PX:          700,
+  CM_PER_FT:         30.48,
+  M_PER_FT:          0.3048,
+  FUSION_MATCH_FT:   100,
+  DB_NAME:           'dashguard',
+  DB_VER:            3,
+  // Overpass chunk size for large downloads (max nodes per request)
+  OVERPASS_CHUNK_DEG: 0.5,  // degrees — ~55 km, chunked for big states
+};
 
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  STATE
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 let tfModel       = null;
 let videoStream   = null;
 let detecting     = false;
@@ -264,130 +413,350 @@ let rafId         = null;
 let muted         = false;
 let mapEnabled    = true;
 let camEnabled    = true;
-let demoTimer     = null;
 let panelOpen     = false;
+let activeTab     = 'status';
+let tapCount      = 0, tapTimer = null;
+let debugOpen     = false;
 
-// GPS state
-let gpsPos        = null;   // { lat, lon, heading, speedMph }
+let selectedDeviceId = null;   // currently active camera deviceId
+let availableLenses  = [];     // [{deviceId, label, zoom, focalPx}]
+
+let gpsPos        = null;
 let lastQueryPos  = null;
 let gpsWatchId    = null;
+let compassHeading = null;
 
-// Map data
-let osmNodes      = [];     // [{lat, lon, type:'stop'|'signal', id}]
+let osmNodes      = [];
 let osmFetchedAt  = null;
+let db            = null;
+let cachedRegions = [];   // [{key, label, nodeCount, ts, bbox}]
 
-// Fusion alerts — merged map+cam detections
-let activeAlerts  = [];     // [{id, type, source, distFt, confirmedBy, ts}]
+let lastMapHits   = [];
+let lastCamHits   = [];
+let activeAlerts  = [];
+let lastSpoken    = {};
 
-// Voice throttle
-let lastSpoken    = {};     // key → timestamp
-
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  DOM
-// ═══════════════════════════════════════════════════════
-const camEl       = document.getElementById('cam');
-const overlayEl   = document.getElementById('overlay');
-const ctx         = overlayEl.getContext('2d');
-const loadingEl   = document.getElementById('loading');
-const loadMsg     = document.getElementById('load-msg');
-const startEl     = document.getElementById('start');
-const alertWrap   = document.getElementById('alert-wrap');
-const mapPanel    = document.getElementById('map-panel');
-const conePath    = document.getElementById('cone-path');
-const btnCam      = document.getElementById('btn-cam');
-const btnMap      = document.getElementById('btn-map');
-const lblCam      = document.getElementById('lbl-cam');
+// ═══════════════════════════════════════════════════
+const camEl      = document.getElementById('cam');
+const overlayEl  = document.getElementById('overlay');
+const ctx        = overlayEl.getContext('2d');
+const loadingEl  = document.getElementById('loading');
+const loadMsg    = document.getElementById('load-msg');
+const startEl    = document.getElementById('start');
+const alertWrap  = document.getElementById('alert-wrap');
+const infoPanelEl= document.getElementById('info-panel');
+const conePath   = document.getElementById('cone-path');
+const debugEl    = document.getElementById('debug');
+const btnCam     = document.getElementById('btn-cam');
+const btnMap     = document.getElementById('btn-map');
+const lblCam     = document.getElementById('lbl-cam');
+const lblMap     = document.getElementById('lbl-map');
 
-// Status indicators
-const gpsDot    = document.getElementById('gps-dot');
-const gpsTxt    = document.getElementById('gps-txt');
-const osmDot    = document.getElementById('osm-dot');
-const osmTxt    = document.getElementById('osm-txt');
-const camDot    = document.getElementById('cam-dot');
-const camTxt    = document.getElementById('cam-txt');
-const speedPill = document.getElementById('speed-pill');
-
-// ═══════════════════════════════════════════════════════
-//  INIT
-// ═══════════════════════════════════════════════════════
-async function initApp() {
-  startEl.style.display = 'none';
-  showLoading('Loading AI detection model…\n(~5 MB, cached after first load)');
-  await loadTFModel();
-  showLoading('Requesting camera…');
-  await startCamera();
-  showLoading('Requesting GPS…');
-  startGPS();
-  hideLoading();
-}
-
-function startDemo() {
-  startEl.style.display = 'none';
-  showLoading('Loading model for demo…');
-  loadTFModel().then(() => {
-    hideLoading();
-    runDemo();
+// ═══════════════════════════════════════════════════
+//  INDEXEDDB
+// ═══════════════════════════════════════════════════
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(CFG.DB_NAME, CFG.DB_VER);
+    req.onupgradeneeded = e => {
+      const d = e.target.result;
+      // nodes store: all OSM sign nodes
+      if (!d.objectStoreNames.contains('nodes')) {
+        d.createObjectStore('nodes', { keyPath: 'id' });
+      }
+      // regions store: metadata about what areas we've downloaded
+      if (!d.objectStoreNames.contains('regions')) {
+        d.createObjectStore('regions', { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror   = () => reject(req.error);
   });
 }
 
-// ═══════════════════════════════════════════════════════
+function idbPut(storeName, records) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const s  = tx.objectStore(storeName);
+    for (const r of records) s.put(r);
+    tx.oncomplete = resolve;
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
+function idbGetAll(storeName) {
+  return new Promise((resolve, reject) => {
+    const tx  = db.transaction(storeName, 'readonly');
+    const req = tx.objectStore(storeName).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+function idbDelete(storeName, key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const req = tx.objectStore(storeName).delete(key);
+    req.onsuccess = resolve;
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+function idbClear(storeName) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const req = tx.objectStore(storeName).clear();
+    req.onsuccess = resolve;
+    req.onerror   = () => reject(req.error);
+  });
+}
+
+async function loadCachedRegions() {
+  if (!db) return;
+  cachedRegions = await idbGetAll('regions');
+  renderRegionList();
+}
+
+async function loadNodesFromDB(lat, lon, radiusM) {
+  if (!db) return [];
+  const all = await idbGetAll('nodes');
+  return all.filter(n => haversineM(lat, lon, n.lat, n.lon) <= radiusM);
+}
+
+async function saveRegion(key, label, nodes, bbox) {
+  if (!db) return;
+  // Upsert all nodes
+  await idbPut('nodes', nodes);
+  // Save region record
+  const region = { key, label, nodeCount: nodes.length, ts: Date.now(), bbox };
+  await idbPut('regions', [region]);
+  cachedRegions = cachedRegions.filter(r => r.key !== key);
+  cachedRegions.push(region);
+  renderRegionList();
+  updateStatusPanel();
+}
+
+async function deleteRegion(key) {
+  if (!db) return;
+  // We can't easily remove individual nodes by region without region tags,
+  // so we keep nodes (they're small) and just remove the region record.
+  // A full clear removes everything.
+  await idbDelete('regions', key);
+  cachedRegions = cachedRegions.filter(r => r.key !== key);
+  renderRegionList();
+  updateStatusPanel();
+}
+
+async function clearAllCache() {
+  if (!confirm('Clear all downloaded map data?')) return;
+  await idbClear('nodes');
+  await idbClear('regions');
+  cachedRegions = [];
+  osmNodes = [];
+  renderRegionList();
+  updateStatusPanel();
+  setStatus('osm','warn','Cache cleared');
+}
+
+function hasCachedCoverage(lat, lon) {
+  // Check if any cached region's bbox covers this point
+  return cachedRegions.some(r => {
+    if (!r.bbox) return false;
+    return lat >= r.bbox.minlat && lat <= r.bbox.maxlat &&
+           lon >= r.bbox.minlon && lon <= r.bbox.maxlon;
+  });
+}
+
+// ═══════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════
+async function initApp() {
+  startEl.style.display = 'none';
+  showLoading('Opening local map cache…');
+  db = await openDB().catch(() => null);
+  await loadCachedRegions();
+
+  showLoading('Loading AI detection model…\n(~5 MB, cached after first load)');
+  await loadTFModel();
+
+  showLoading('Requesting camera…');
+  await startCamera(null);
+
+  showLoading('Requesting GPS…');
+  startGPS();
+  startCompass();
+  hideLoading();
+}
+
+// ═══════════════════════════════════════════════════
 //  TF MODEL
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 async function loadTFModel() {
   if (tfModel) return;
   try {
-    setStatus('cam', 'warn', 'Loading model…');
+    setStatus('cam','warn','Loading model…');
     tfModel = await cocoSsd.load({ base: 'mobilenet_v2' });
-    setStatus('cam', 'ok', 'Cam ready');
+    setStatus('cam','ok','Cam ready');
   } catch(e) {
-    setStatus('cam', 'err', 'Model failed');
-    console.error('TF load:', e);
+    setStatus('cam','err','Model failed');
+    console.error('TF:', e);
   }
 }
 
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  CAMERA
-// ═══════════════════════════════════════════════════════
-async function startCamera() {
-  if (videoStream) return;
+// ═══════════════════════════════════════════════════
+async function startCamera(deviceId) {
+  if (videoStream) stopCamera();
   try {
-    videoStream = await navigator.mediaDevices.getUserMedia({
-      video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} },
-      audio:false
-    });
+    const constraints = {
+      video: deviceId
+        ? { deviceId: { exact: deviceId }, width:{ideal:1920}, height:{ideal:1080} }
+        : { facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} },
+      audio: false
+    };
+    videoStream = await navigator.mediaDevices.getUserMedia(constraints);
     camEl.srcObject = videoStream;
     await camEl.play();
-    btnCam.classList.add('active-cam');
+    selectedDeviceId = videoStream.getVideoTracks()[0].getSettings().deviceId || null;
+    btnCam.classList.add('on-cam');
     lblCam.textContent = 'Camera on';
-    setStatus('cam', 'pulse', 'Detecting');
+    setStatus('cam','pulse','Detecting');
     beginDetection();
+    // Enumerate lenses now that we have permission
+    await enumerateLenses();
   } catch(e) {
-    setStatus('cam', 'err', 'Cam denied');
+    setStatus('cam','err','Cam denied');
     camEnabled = false;
-    alert('Camera access denied.\nIn Safari: tap AA → Website Settings → Camera → Allow, then reload.');
   }
 }
 
 function stopCamera() {
   if (videoStream) { videoStream.getTracks().forEach(t => t.stop()); videoStream = null; }
-  camEl.srcObject = null;
-  detecting = false;
+  camEl.srcObject = null; detecting = false;
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-  btnCam.classList.remove('active-cam');
+  btnCam.classList.remove('on-cam');
   lblCam.textContent = 'Camera';
-  setStatus('cam', '', 'Cam off');
-  ctx.clearRect(0, 0, overlayEl.width, overlayEl.height);
+  setStatus('cam','','Cam off');
+  ctx.clearRect(0,0,overlayEl.width,overlayEl.height);
 }
 
 function toggleCamera() {
   camEnabled = !camEnabled;
-  if (camEnabled) startCamera();
-  else { stopCamera(); setStatus('cam', '', 'Cam off'); }
+  if (camEnabled) startCamera(selectedDeviceId);
+  else { stopCamera(); lastCamHits = []; mergeAndRender(); }
 }
 
-// ═══════════════════════════════════════════════════════
-//  CAMERA DETECTION LOOP
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  LENS ENUMERATION + SWITCHING
+// ═══════════════════════════════════════════════════
+
+// Known focal length estimates per zoom level (tuned for iPhone rear cameras)
+const LENS_FOCAL = { 0.5: 350, 1: 700, 2: 1100, 3: 1500, 5: 2200 };
+
+async function enumerateLenses() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams    = devices.filter(d => d.kind === 'videoinput');
+
+    // Parse zoom level from iOS label e.g. "Back Ultra Wide Camera", "Back Camera", "Back Telephoto Camera 2x"
+    availableLenses = cams.map(d => {
+      const lbl = d.label || '';
+      let zoom  = 1;
+      let name  = '1x';
+      const isFront = /front/i.test(lbl);
+      if (isFront) { return null; } // skip front camera
+      if (/ultra\s*wide|0\.5/i.test(lbl)) { zoom = 0.5; name = '0.5x'; }
+      else if (/telephoto.*3x|3\s*x/i.test(lbl))  { zoom = 3; name = '3x'; }
+      else if (/telephoto.*2x|2\s*x/i.test(lbl))  { zoom = 2; name = '2x'; }
+      else if (/telephoto.*5x|5\s*x/i.test(lbl))  { zoom = 5; name = '5x'; }
+      else if (/telephoto/i.test(lbl))             { zoom = 2; name = '2x'; }
+      const focalPx = LENS_FOCAL[zoom] || 700;
+      return { deviceId: d.deviceId, label: lbl, zoom, name, focalPx };
+    }).filter(Boolean);
+
+    // If labels are blank (privacy mode before permission granted), fall back to index-based naming
+    if (availableLenses.length === 0) {
+      const rearCams = cams.filter(d => !/front/i.test(d.label));
+      availableLenses = rearCams.map((d, i) => ({
+        deviceId: d.deviceId,
+        label: d.label || `Rear camera ${i+1}`,
+        zoom: i === 0 ? 1 : i,
+        name: i === 0 ? '1x' : `${i}x`,
+        focalPx: LENS_FOCAL[i === 0 ? 1 : i] || 700,
+      }));
+    }
+
+    renderLensGrid();
+  } catch(e) {
+    console.warn('enumerateLenses:', e);
+  }
+}
+
+function renderLensGrid() {
+  const grid = document.getElementById('lens-grid');
+  if (!grid) return;
+  if (availableLenses.length === 0) {
+    grid.innerHTML = '<div style="font-size:12px;color:var(--muted);grid-column:1/-1">No rear cameras found.</div>';
+    return;
+  }
+
+  grid.innerHTML = availableLenses.map(l => {
+    const isSel = l.deviceId === selectedDeviceId;
+    const tip   = l.zoom < 1 ? 'Ultrawide — not recommended'
+                : l.zoom >= 3 ? 'Best range'
+                : l.zoom >= 2 ? 'Great range'
+                : 'Good all-round';
+    return `<button class="lens-btn ${isSel?'selected':''}"
+      onclick="switchLens('${l.deviceId}',${l.focalPx},'${l.name}')">
+      <span class="lens-zoom">${l.name}</span>
+      <span class="lens-name">${l.zoom < 1 ? 'Ultra wide' : l.zoom >= 2 ? 'Telephoto' : 'Main'}</span>
+      <span class="lens-note">${tip}</span>
+    </button>`;
+  }).join('');
+}
+
+async function switchLens(deviceId, focalPx, name) {
+  if (deviceId === selectedDeviceId) return;
+  setStatus('cam','warn',`Switching to ${name}…`);
+  // Update focal length to match lens
+  CFG.FOCAL_PX = focalPx;
+  document.getElementById('sl-focal').value  = focalPx;
+  document.getElementById('lbl-focal').textContent = focalPx;
+  // Also lower confidence slightly for telephoto (farther = smaller = lower score)
+  if (focalPx >= 1100) {
+    CFG.CAM_CONF_MIN = 0.30;
+    document.getElementById('sl-conf').value = 30;
+    document.getElementById('lbl-conf').textContent = '30%';
+  }
+  await startCamera(deviceId);
+  renderLensGrid();
+  setStatus('cam','pulse',`Cam ${name}`);
+}
+
+function setFocalPreset(preset) {
+  const map = { ultrawide:350, main:700, tele2:1100, tele3:1500 };
+  const val = map[preset] || 700;
+  CFG.FOCAL_PX = val;
+  document.getElementById('sl-focal').value = val;
+  document.getElementById('lbl-focal').textContent = val;
+}
+
+function updateConf(val) {
+  CFG.CAM_CONF_MIN = val / 100;
+  document.getElementById('lbl-conf').textContent = val + '%';
+}
+
+function updateFocal(val) {
+  CFG.FOCAL_PX = Number(val);
+  document.getElementById('lbl-focal').textContent = val;
+}
+
+// ═══════════════════════════════════════════════════
+//  DETECTION LOOP
+// ═══════════════════════════════════════════════════
 function beginDetection() {
   detecting = true;
   async function loop() {
@@ -395,10 +764,7 @@ function beginDetection() {
     if (camEl.readyState === camEl.HAVE_ENOUGH_DATA) {
       overlayEl.width  = camEl.videoWidth;
       overlayEl.height = camEl.videoHeight;
-      try {
-        const preds = await tfModel.detect(camEl);
-        processCamPredictions(preds);
-      } catch(_) {}
+      try { processCamPredictions(await tfModel.detect(camEl)); } catch(_){}
     }
     rafId = requestAnimationFrame(loop);
   }
@@ -406,416 +772,544 @@ function beginDetection() {
 }
 
 function processCamPredictions(preds) {
-  ctx.clearRect(0, 0, overlayEl.width, overlayEl.height);
-  const camHits = [];
-
+  ctx.clearRect(0,0,overlayEl.width,overlayEl.height);
+  const hits = [];
   for (const p of preds) {
-    if (p.score < CAM_CONF_MIN) continue;
-    const cls = p.class.toLowerCase();
-    const isStop  = cls === 'stop sign';
-    const isLight = cls === 'traffic light';
+    if (p.score < CFG.CAM_CONF_MIN) continue;
+    const cls    = p.class.toLowerCase();
+    const isStop = cls === 'stop sign';
+    const isLight= cls === 'traffic light';
     if (!isStop && !isLight) continue;
-
-    const [x, y, w, h] = p.bbox;
-    const distFt = estimateDist(isStop ? w : h, isStop ? STOP_W_CM : LIGHT_H_CM);
-
-    // Draw bounding box
+    const [x,y,w,h] = p.bbox;
+    const distFt = estimateDist(isStop ? w : h, isStop ? CFG.STOP_W_CM : CFG.LIGHT_H_CM);
     const col = isStop ? '#E24B4A' : '#378ADD';
-    ctx.strokeStyle = col;
-    ctx.lineWidth = Math.max(2, overlayEl.width / 350);
-    ctx.strokeRect(x, y, w, h);
-
-    // Label chip
-    const tag = `${isStop ? '🛑' : '🚦'} ~${distFt}ft  CAM`;
-    const fs  = Math.max(11, overlayEl.width / 60);
-    ctx.font = `600 ${fs}px -apple-system,sans-serif`;
-    const tw = ctx.measureText(tag).width;
-    ctx.fillStyle = col + 'cc';
-    ctx.fillRect(x, y - fs - 8, tw + 10, fs + 8);
-    ctx.fillStyle = '#fff';
-    ctx.fillText(tag, x + 5, y - 4);
-
-    camHits.push({ type: isStop ? 'stop' : 'signal', distFt, score: p.score, source: 'cam' });
+    ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, overlayEl.width/350);
+    ctx.strokeRect(x,y,w,h);
+    const tag = `${isStop?'🛑':'🚦'} ~${distFt}ft`;
+    const fs  = Math.max(11, overlayEl.width/60);
+    ctx.font  = `600 ${fs}px -apple-system,sans-serif`;
+    const tw  = ctx.measureText(tag).width;
+    ctx.fillStyle = col+'cc'; ctx.fillRect(x,y-fs-8,tw+10,fs+8);
+    ctx.fillStyle = '#fff';   ctx.fillText(tag,x+5,y-4);
+    hits.push({ type: isStop?'stop':'signal', distFt, score: p.score, source:'cam' });
   }
-
-  fusionMerge([], camHits);
+  lastCamHits = hits;
+  mergeAndRender();
 }
 
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  GPS
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 function startGPS() {
-  if (!navigator.geolocation) {
-    setStatus('gps', 'err', 'No GPS');
-    setStatus('osm', 'err', 'No GPS');
-    return;
-  }
-  setStatus('gps', 'warn', 'Acquiring…');
-
+  if (!navigator.geolocation) { setStatus('gps','err','No GPS'); return; }
+  setStatus('gps','warn','Acquiring…');
   gpsWatchId = navigator.geolocation.watchPosition(
     pos => onGPSUpdate(pos),
-    err => {
-      console.warn('GPS err:', err);
-      setStatus('gps', 'err', 'GPS error');
-    },
-    { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+    err => { console.warn('GPS:', err); setStatus('gps','err','GPS error'); },
+    { enableHighAccuracy:true, maximumAge:1000, timeout:15000 }
   );
 }
 
 function onGPSUpdate(pos) {
-  const { latitude: lat, longitude: lon, heading, speed } = pos.coords;
-  const speedMph = speed ? Math.round(speed * 2.237) : 0;
+  const { latitude:lat, longitude:lon, heading, speed, accuracy } = pos.coords;
+  const speedMph = speed != null ? speed * 2.237 : 0;
 
-  gpsPos = { lat, lon, heading: heading || 0, speedMph };
-  setStatus('gps', 'ok', `GPS ±${Math.round(pos.coords.accuracy)}m`);
-  speedPill.textContent = speedMph > 2 ? `${speedMph} mph` : '– mph';
-
-  // Update heading cone visualisation
-  updateCone(heading || 0);
-
-  // Query OSM if we've moved enough
-  if (mapEnabled) {
-    if (!lastQueryPos || haversineM(lat, lon, lastQueryPos.lat, lastQueryPos.lon) > OSM_REFRESH_DIST_M) {
-      fetchOSMNodes(lat, lon);
-    }
-    evaluateMapAlerts();
+  let resolvedHeading = null, headingSrc = 'none';
+  if (speedMph >= CFG.HEADING_MIN_MPH && heading != null && !isNaN(heading)) {
+    resolvedHeading = heading; headingSrc = 'gps';
+  } else if (compassHeading != null) {
+    resolvedHeading = compassHeading; headingSrc = 'compass';
   }
 
-  updateMapPanel();
+  gpsPos = { lat, lon, heading: resolvedHeading, headingSrc, speedMph, accuracy };
+  setStatus('gps','ok',`GPS ±${Math.round(accuracy)}m`);
+  document.getElementById('speed-pill').textContent =
+    speedMph > 1 ? `${Math.round(speedMph)} mph` : '– mph';
+  updateCone(resolvedHeading);
+
+  if (mapEnabled) {
+    const needsQuery = !lastQueryPos ||
+      haversineM(lat, lon, lastQueryPos.lat, lastQueryPos.lon) > CFG.OSM_REFRESH_M;
+    if (needsQuery) fetchOSMNodes(lat, lon);
+    else evaluateMapAlerts();
+  }
+  updateStatusPanel();
 }
 
-// ═══════════════════════════════════════════════════════
-//  OSM OVERPASS QUERY
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  COMPASS
+// ═══════════════════════════════════════════════════
+function startCompass() {
+  if (!window.DeviceOrientationEvent) return;
+  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission()
+      .then(r => { if (r==='granted') listenOrientation(); }).catch(()=>{});
+  } else {
+    listenOrientation();
+  }
+}
+function listenOrientation() {
+  window.addEventListener('deviceorientationabsolute', onOrientation, true);
+  window.addEventListener('deviceorientation',         onOrientation, true);
+}
+function onOrientation(e) {
+  if (e.webkitCompassHeading != null) compassHeading = e.webkitCompassHeading;
+  else if (e.absolute && e.alpha != null) compassHeading = (360 - e.alpha) % 360;
+}
+
+// ═══════════════════════════════════════════════════
+//  OSM FETCH (live, with cache fallback)
+// ═══════════════════════════════════════════════════
 async function fetchOSMNodes(lat, lon) {
   lastQueryPos = { lat, lon };
-  setStatus('osm', 'warn', 'Fetching OSM…');
 
-  // Query stop signs + traffic signals in radius
-  const r = OSM_QUERY_RADIUS_M;
-  const query = `
-[out:json][timeout:10];
-(
-  node["highway"="stop"](around:${r},${lat},${lon});
-  node["highway"="traffic_signals"](around:${r},${lat},${lon});
-  node["highway"="give_way"](around:${r},${lat},${lon});
-);
-out body;`;
+  // If we have cached coverage for this position, load from DB
+  if (hasCachedCoverage(lat, lon) && db) {
+    const cached = await loadNodesFromDB(lat, lon, CFG.OSM_RADIUS_M);
+    if (cached.length > 0) {
+      osmNodes = cached; osmFetchedAt = Date.now();
+      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
+      evaluateMapAlerts();
+      return;
+    }
+  }
 
+  // Live Overpass query
+  setStatus('osm','warn','Fetching OSM…');
+  const r = CFG.OSM_RADIUS_M;
+  const q = `[out:json][timeout:12];(node["highway"="stop"](around:${r},${lat},${lon});node["highway"="traffic_signals"](around:${r},${lat},${lon});node["highway"="give_way"](around:${r},${lat},${lon}););out body;`;
   try {
-    const url = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
-    const res  = await fetch(url);
+    const res  = await fetch('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q));
     const json = await res.json();
-
-    osmNodes = json.elements.map(el => ({
-      id:   el.id,
-      lat:  el.lat,
-      lon:  el.lon,
-      type: el.tags?.highway === 'traffic_signals' ? 'signal' : 'stop',
-    }));
-
+    osmNodes   = json.elements.map(toNode);
     osmFetchedAt = Date.now();
-    setStatus('osm', 'ok', `OSM: ${osmNodes.length} nodes`);
+    setStatus('osm','ok',`OSM: ${osmNodes.length}`);
     evaluateMapAlerts();
+    updateStatusPanel();
   } catch(e) {
-    setStatus('osm', 'err', 'OSM failed');
-    console.warn('OSM fetch error:', e);
+    setStatus('osm','err',`OSM fail (${osmNodes.length} loaded)`);
+    if (osmNodes.length > 0) evaluateMapAlerts();
   }
 }
 
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  MAP ALERT EVALUATION
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 function evaluateMapAlerts() {
   if (!gpsPos || !mapEnabled) return;
-  const { lat, lon, heading } = gpsPos;
-
-  const mapHits = [];
+  const { lat, lon, heading, speedMph } = gpsPos;
+  const hits = [];
 
   for (const node of osmNodes) {
-    const distM  = haversineM(lat, lon, node.lat, node.lon);
-    const distFt = distM / M_PER_FT;
-    if (distFt > 550 || distFt < 5) continue;
-
-    // Heading filter — only consider nodes roughly ahead of us
-    if (gpsPos.speedMph > 3) {
-      const bearing = bearingDeg(lat, lon, node.lat, node.lon);
-      const diff    = angleDiff(bearing, heading);
-      if (Math.abs(diff) > HEADING_CONE_DEG + 15) continue;
+    const distFt = haversineM(lat, lon, node.lat, node.lon) / CFG.M_PER_FT;
+    if (distFt > CFG.ALERT_MAX_FT || distFt < CFG.ALERT_MIN_FT) continue;
+    // Heading filter only when we have a reliable heading
+    if (heading != null && speedMph >= CFG.HEADING_MIN_MPH) {
+      const diff = angleDiff(bearingDeg(lat, lon, node.lat, node.lon), heading);
+      if (Math.abs(diff) > CFG.HEADING_CONE_DEG) continue;
     }
-
-    mapHits.push({ type: node.type, distFt: Math.round(distFt), nodeId: node.id, source: 'map' });
+    hits.push({ type: node.type, distFt: Math.round(distFt), nodeId: node.id, source:'map' });
   }
 
-  // Sort by distance
-  mapHits.sort((a, b) => a.distFt - b.distFt);
-  fusionMerge(mapHits, []);
+  hits.sort((a,b) => a.distFt - b.distFt);
+  lastMapHits = hits;
+  mergeAndRender();
+  dbg(`Map: ${hits.length} hits, hdg: ${heading!=null?Math.round(heading)+'°':'off'}`);
 }
 
-// ═══════════════════════════════════════════════════════
-//  FUSION ENGINE
-// ═══════════════════════════════════════════════════════
-function fusionMerge(mapHits, camHits) {
+// ═══════════════════════════════════════════════════
+//  FUSION
+// ═══════════════════════════════════════════════════
+function mergeAndRender() {
   const merged = [];
-
-  // Start with map hits (authoritative)
-  for (const m of mapHits) {
+  for (const m of lastMapHits) {
     const entry = { ...m, confirmedByCam: false };
-
-    // Check if any cam hit is close enough to be the same object
-    for (const c of camHits) {
-      if (c.type === m.type && Math.abs(c.distFt - m.distFt) < FUSION_MATCH_FT) {
-        entry.confirmedByCam = true;
-        entry.camScore = c.score;
-        break;
+    for (const c of lastCamHits) {
+      if (c.type === m.type && Math.abs(c.distFt - m.distFt) < CFG.FUSION_MATCH_FT) {
+        entry.confirmedByCam = true; entry.camScore = c.score; break;
       }
     }
-
     entry.displaySource = entry.confirmedByCam ? 'both' : 'map';
     merged.push(entry);
   }
-
-  // Add camera-only hits (unmapped signs)
-  for (const c of camHits) {
-    const alreadyCovered = mapHits.some(m =>
-      m.type === c.type && Math.abs(m.distFt - c.distFt) < FUSION_MATCH_FT
+  for (const c of lastCamHits) {
+    const covered = lastMapHits.some(m =>
+      m.type === c.type && Math.abs(m.distFt - c.distFt) < CFG.FUSION_MATCH_FT
     );
-    if (!alreadyCovered) {
-      merged.push({ ...c, confirmedByCam: true, displaySource: 'cam', unverified: true });
-    }
+    if (!covered) merged.push({ ...c, confirmedByCam:true, displaySource:'cam', unmapped:true });
   }
-
-  // Sort by distance
-  merged.sort((a, b) => a.distFt - b.distFt);
+  merged.sort((a,b) => a.distFt - b.distFt);
   activeAlerts = merged;
-
   renderAlertCards(merged);
   triggerVoiceAlerts(merged);
+  updateStatusPanel();
 }
 
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  ALERT CARDS
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 function renderAlertCards(alerts) {
   alertWrap.innerHTML = '';
-  for (const a of alerts.slice(0, 3)) {
-    const card = document.createElement('div');
-    const distClass = a.distFt > 300 ? 'far' : a.distFt > 100 ? 'mid' : 'near';
-    const borderClass = a.unverified ? 'unverified' : a.type === 'signal' ? 'light' : '';
-    card.className = `alert-card ${borderClass}`;
-
-    const srcLabel = a.displaySource === 'both'
+  for (const a of alerts.slice(0,3)) {
+    const dc  = a.distFt > 300 ? 'far' : a.distFt > 100 ? 'mid' : 'near';
+    const cc  = a.unmapped ? 'camonly' : a.type === 'signal' ? 'signal' : '';
+    const bdg = a.displaySource === 'both'
       ? '<span class="src-badge src-both">MAP+CAM</span>'
       : a.displaySource === 'map'
         ? '<span class="src-badge src-map">MAP</span>'
         : '<span class="src-badge src-cam">CAM</span>';
-
-    const icon     = a.type === 'stop' ? '🛑' : '🚦';
-    const typeLabel= a.type === 'stop' ? 'Stop sign' : 'Traffic signal';
-    const subNote  = a.unverified ? 'Not in map data — camera detected' : a.confirmedByCam ? 'Map + camera confirmed' : 'Map data';
-
-    card.innerHTML = `
-      <div class="alert-icon">${icon}</div>
+    const sub = a.unmapped ? 'Not in map — camera only'
+              : a.confirmedByCam ? 'Map + camera confirmed'
+              : 'From map data';
+    const c = document.createElement('div');
+    c.className = `alert-card ${cc}`;
+    c.innerHTML = `<div class="alert-icon">${a.type==='stop'?'🛑':'🚦'}</div>
       <div class="alert-body">
-        <div class="alert-label">${typeLabel} ${srcLabel}</div>
-        <div class="alert-sub">${subNote}</div>
+        <div class="alert-label">${a.type==='stop'?'Stop sign':'Traffic signal'}${bdg}</div>
+        <div class="alert-sub">${sub}</div>
       </div>
-      <div class="alert-dist ${distClass}">${Math.round(a.distFt)}<span style="font-size:11px;font-weight:400;color:var(--muted)"> ft</span></div>
-    `;
-    alertWrap.appendChild(card);
+      <div class="alert-dist ${dc}">${Math.round(a.distFt)}<span style="font-size:11px;font-weight:400;color:var(--muted)"> ft</span></div>`;
+    alertWrap.appendChild(c);
   }
 }
 
-// ═══════════════════════════════════════════════════════
-//  VOICE ALERTS
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  VOICE
+// ═══════════════════════════════════════════════════
 function triggerVoiceAlerts(alerts) {
   for (const a of alerts) {
     const bracket = nearestBracket(a.distFt);
     if (bracket === null) continue;
-
-    const key = `${a.type}-${a.nodeId || 'cam'}-${bracket}`;
+    const key = `${a.type}-${a.nodeId||'cam'}-${bracket}`;
     const now = Date.now();
-    if (lastSpoken[key] && now - lastSpoken[key] < SPEAK_COOLDOWN_MS) continue;
-
+    if (lastSpoken[key] && now - lastSpoken[key] < CFG.SPEAK_COOLDOWN_MS) continue;
     lastSpoken[key] = now;
     speak(buildUtterance(a));
-    break; // one alert per cycle, closest wins
+    break;
   }
 }
-
 function buildUtterance(a) {
   const ft   = Math.round(a.distFt);
   const type = a.type === 'stop' ? 'stop sign' : 'traffic signal';
-
   if (ft >= 450) return `${type} ahead, ${ft} feet.`;
-  if (ft >= 300) return `${type}, ${ft} feet.`;
-  if (ft >= 150) return `${type} approaching, ${ft} feet. Prepare to stop.`;
-  if (ft >= 60)  return `${type}, ${ft} feet.`;
+  if (ft >= 280) return `${type}, ${ft} feet.`;
+  if (ft >= 130) return `${type} approaching, ${ft} feet. Prepare to stop.`;
+  if (ft >= 55)  return `${type}, ${ft} feet.`;
   if (a.type === 'stop') return 'Stop sign. Please do not roll through.';
-  return 'Traffic signal. Watch the light.';
+  return 'Traffic signal ahead. Watch the light.';
 }
-
 function speak(text) {
   if (muted || !window.speechSynthesis) return;
-  const u   = new SpeechSynthesisUtterance(text);
-  u.rate    = 0.92;
-  u.pitch   = 1.0;
-  u.volume  = 1.0;
-  const voices = speechSynthesis.getVoices();
-  const en = voices.find(v => v.lang.startsWith('en') && v.localService);
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 0.92; u.pitch = 1.0; u.volume = 1.0;
+  const en = speechSynthesis.getVoices().find(v => v.lang.startsWith('en') && v.localService);
   if (en) u.voice = en;
   speechSynthesis.cancel();
   speechSynthesis.speak(u);
 }
 
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  REGION DOWNLOAD — state/county via Nominatim + Overpass
+// ═══════════════════════════════════════════════════
+async function downloadRegion() {
+  const state  = document.getElementById('inp-state').value.trim();
+  const county = document.getElementById('inp-county').value.trim();
+  if (!state) { setProgress('Enter a state name.'); return; }
+  if (!db)    { setProgress('Local storage unavailable.'); return; }
+
+  const btn = document.getElementById('btn-dl');
+  btn.disabled = true;
+  const label = county ? `${county}, ${state}` : state;
+  setProgress(`Looking up ${label}…`);
+  setProgBar(0);
+
+  try {
+    // Step 1: Nominatim lookup → bounding box
+    const q    = county ? `${county}, ${state}, USA` : `${state}, USA`;
+    const nUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=3&featuretype=${county?'county':'state'}`;
+    const nRes = await fetch(nUrl, { headers:{ 'Accept-Language':'en' } });
+    const nJson= await nRes.json();
+
+    // Pick best result: prefer boundary/administrative
+    const best = nJson.find(r => r.type==='administrative'||r.type==='county'||r.type==='state')
+               || nJson[0];
+
+    if (!best) { setProgress(`Could not find "${label}". Check spelling.`); btn.disabled=false; return; }
+
+    const [minlat,maxlat,minlon,maxlon] = best.boundingbox.map(Number);
+    const bbox = { minlat, maxlat, minlon, maxlon };
+
+    const areaKm2 = haversineM(minlat,minlon,minlat,maxlon)/1000
+                  * haversineM(minlat,minlon,maxlat,minlon)/1000;
+    setProgress(`Found ${best.display_name.split(',')[0]}. Area ~${Math.round(areaKm2)} km². Downloading…`);
+    setProgBar(10);
+
+    // Step 2: Chunk the bbox into ~0.5° tiles to avoid Overpass timeouts
+    const nodes = await downloadBBox(bbox, label, (pct) => setProgBar(10 + pct*0.88));
+
+    setProgBar(99);
+    const key = `region:${label.toLowerCase().replace(/\s+/g,'-')}`;
+    await saveRegion(key, label, nodes, bbox);
+
+    // Update live osmNodes if we're currently inside this region
+    if (gpsPos && hasCachedCoverage(gpsPos.lat, gpsPos.lon)) {
+      osmNodes = await loadNodesFromDB(gpsPos.lat, gpsPos.lon, CFG.OSM_RADIUS_M);
+      osmFetchedAt = Date.now();
+      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
+      evaluateMapAlerts();
+    }
+
+    setProgBar(100);
+    setProgress(`✓ Downloaded ${nodes.length.toLocaleString()} signs for ${label}`);
+    document.getElementById('inp-state').value  = '';
+    document.getElementById('inp-county').value = '';
+  } catch(e) {
+    setProgress(`Error: ${e.message}`);
+    console.error(e);
+  }
+  btn.disabled = false;
+}
+
+async function downloadBBox(bbox, label, onProgress) {
+  const { minlat, maxlat, minlon, maxlon } = bbox;
+  const chunk = CFG.OVERPASS_CHUNK_DEG;
+
+  // Build grid of chunks
+  const latSteps = [], lonSteps = [];
+  for (let lat = minlat; lat < maxlat; lat += chunk)
+    latSteps.push([lat, Math.min(lat+chunk, maxlat)]);
+  for (let lon = minlon; lon < maxlon; lon += chunk)
+    lonSteps.push([lon, Math.min(lon+chunk, maxlon)]);
+
+  const totalChunks = latSteps.length * lonSteps.length;
+  let done = 0;
+  const allNodes = new Map(); // dedup by id
+
+  for (const [la1,la2] of latSteps) {
+    for (const [lo1,lo2] of lonSteps) {
+      const q = `[out:json][timeout:25];(node["highway"="stop"](${la1},${lo1},${la2},${lo2});node["highway"="traffic_signals"](${la1},${lo1},${la2},${lo2});node["highway"="give_way"](${la1},${lo1},${la2},${lo2}););out body;`;
+      try {
+        const res  = await fetch('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q));
+        const json = await res.json();
+        for (const el of json.elements) allNodes.set(el.id, toNode(el));
+      } catch(e) {
+        console.warn('Chunk failed, skipping:', e.message);
+      }
+      done++;
+      onProgress(done / totalChunks);
+      setProgress(`Downloading ${label}… chunk ${done}/${totalChunks} (${allNodes.size.toLocaleString()} nodes)`);
+      // Small delay to be polite to Overpass
+      if (done < totalChunks) await sleep(300);
+    }
+  }
+  return Array.from(allNodes.values());
+}
+
+// ═══════════════════════════════════════════════════
+//  RADIUS DOWNLOAD (around current position)
+// ═══════════════════════════════════════════════════
+async function downloadRadius(km) {
+  if (!gpsPos) { alert('GPS required. Wait for GPS lock.'); return; }
+  if (!db)     { alert('Local storage unavailable.'); return; }
+  if (!panelOpen) return;
+
+  const { lat, lon } = gpsPos;
+  const dlat = km / 111;
+  const dlon = km / (111 * Math.cos(lat * Math.PI / 180));
+  const bbox = {
+    minlat: lat-dlat, maxlat: lat+dlat,
+    minlon: lon-dlon, maxlon: lon+dlon,
+  };
+  const label = `${km}km around current location`;
+  const key   = `radius:${km}km:${lat.toFixed(3)},${lon.toFixed(3)}`;
+
+  switchTab('cache');
+  setProgress(`Downloading ${km}km radius…`);
+  setProgBar(5);
+
+  try {
+    const nodes = await downloadBBox(bbox, label, p => setProgBar(5 + p*93));
+    await saveRegion(key, label, nodes, bbox);
+    if (gpsPos) {
+      osmNodes = await loadNodesFromDB(gpsPos.lat, gpsPos.lon, CFG.OSM_RADIUS_M);
+      osmFetchedAt = Date.now();
+      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
+      evaluateMapAlerts();
+    }
+    setProgBar(100);
+    setProgress(`✓ Downloaded ${nodes.length.toLocaleString()} signs for ${label}`);
+  } catch(e) {
+    setProgress(`Error: ${e.message}`);
+  }
+}
+
+// ═══════════════════════════════════════════════════
+//  REGION LIST UI
+// ═══════════════════════════════════════════════════
+function renderRegionList() {
+  const el = document.getElementById('region-list');
+  if (cachedRegions.length === 0) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted)">No regions cached yet.</div>';
+    return;
+  }
+  el.innerHTML = cachedRegions
+    .sort((a,b) => b.ts - a.ts)
+    .map(r => `
+      <div class="region-item">
+        <div>
+          <div class="region-name">${r.label}</div>
+          <div class="region-meta">${r.nodeCount.toLocaleString()} nodes · ${timeAgo(r.ts)}</div>
+        </div>
+        <button class="region-del" onclick="deleteRegion('${r.key}')" title="Remove">×</button>
+      </div>`).join('');
+}
+
+function timeAgo(ts) {
+  const s = Math.round((Date.now()-ts)/1000);
+  if (s < 60)   return 'just now';
+  if (s < 3600) return `${Math.round(s/60)}m ago`;
+  if (s < 86400) return `${Math.round(s/3600)}h ago`;
+  return `${Math.round(s/86400)}d ago`;
+}
+
+function setProgress(msg) {
+  document.getElementById('dl-progress').textContent = msg;
+}
+function setProgBar(pct) {
+  const bar  = document.getElementById('prog-bar');
+  const fill = document.getElementById('prog-fill');
+  bar.classList.toggle('hidden', pct === 0 || pct >= 100);
+  fill.style.width = Math.round(pct) + '%';
+}
+
+// ═══════════════════════════════════════════════════
+//  STATUS PANEL
+// ═══════════════════════════════════════════════════
+function updateStatusPanel() {
+  if (!panelOpen || activeTab !== 'status') return;
+  const ahead = activeAlerts.filter(a => a.distFt < CFG.ALERT_MAX_FT);
+  document.getElementById('st-signs').textContent   = ahead.length;
+  document.getElementById('st-nearest').textContent = ahead.length ? `${ahead[0].distFt} ft` : '–';
+  document.getElementById('st-speed').textContent   = gpsPos ? `${Math.round(gpsPos.speedMph)} mph` : '–';
+  document.getElementById('st-heading').textContent = gpsPos?.heading != null
+    ? `${Math.round(gpsPos.heading)}°` : 'n/a';
+  document.getElementById('st-acc').textContent     = gpsPos ? `±${Math.round(gpsPos.accuracy)}m` : '–';
+  document.getElementById('st-hsrc').textContent    = gpsPos?.headingSrc || '–';
+  document.getElementById('st-nodes').textContent   = osmNodes.length;
+  document.getElementById('st-age').textContent     = osmFetchedAt
+    ? `${Math.round((Date.now()-osmFetchedAt)/1000)}s ago` : '–';
+  document.getElementById('st-regions').textContent = cachedRegions.length;
+  const totalNodes = cachedRegions.reduce((s,r) => s+r.nodeCount, 0);
+  document.getElementById('st-cnodes').textContent  = totalNodes.toLocaleString();
+}
+
+// ═══════════════════════════════════════════════════
+//  HEADING CONE
+// ═══════════════════════════════════════════════════
+function updateCone(hdg) {
+  const cx=26,cy=26,r=20;
+  if (hdg == null) {
+    conePath.setAttribute('d',`M${cx-r},${cy} A${r},${r} 0 1,1 ${cx+r},${cy} A${r},${r} 0 1,1 ${cx-r},${cy}`);
+    conePath.setAttribute('fill','rgba(239,159,39,.15)');
+    conePath.setAttribute('stroke','rgba(239,159,39,.4)');
+    return;
+  }
+  conePath.setAttribute('fill','rgba(55,138,221,.2)');
+  conePath.setAttribute('stroke','rgba(55,138,221,.5)');
+  const base=hdg-90, half=CFG.HEADING_CONE_DEG;
+  const a1=(base-half)*Math.PI/180, a2=(base+half)*Math.PI/180;
+  const x1=cx+r*Math.cos(a1),y1=cy+r*Math.sin(a1);
+  const x2=cx+r*Math.cos(a2),y2=cy+r*Math.sin(a2);
+  conePath.setAttribute('d',`M${cx},${cy} L${x1},${y1} A${r},${r} 0 0,1 ${x2},${y2} Z`);
+}
+
+// ═══════════════════════════════════════════════════
 //  UI CONTROLS
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 function toggleMute() {
   muted = !muted;
   document.getElementById('mute-icon').textContent = muted ? '🔇' : '🔊';
-  document.getElementById('btn-mute').classList.toggle('muted-btn', muted);
+  document.getElementById('btn-mute').classList.toggle('is-muted', muted);
   if (muted) speechSynthesis.cancel();
 }
-
 function toggleMap() {
   mapEnabled = !mapEnabled;
-  btnMap.classList.toggle('active-map', mapEnabled);
-  document.getElementById('lbl-map').textContent = mapEnabled ? 'Map on' : 'Map off';
-  if (!mapEnabled) {
-    setStatus('osm', '', 'Map off');
-    osmNodes = [];
-  } else if (gpsPos) {
-    fetchOSMNodes(gpsPos.lat, gpsPos.lon);
-  }
+  btnMap.classList.toggle('on-map', mapEnabled);
+  lblMap.textContent = mapEnabled ? 'Map on' : 'Map off';
+  if (!mapEnabled) { setStatus('osm','','Map off'); lastMapHits=[]; mergeAndRender(); }
+  else if (gpsPos) fetchOSMNodes(gpsPos.lat, gpsPos.lon);
 }
-
 function togglePanel() {
   panelOpen = !panelOpen;
-  mapPanel.classList.toggle('hidden', !panelOpen);
+  infoPanelEl.classList.toggle('open', panelOpen);
+  if (panelOpen) updateStatusPanel();
+}
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.ptab').forEach(el =>
+    el.classList.toggle('active', el.textContent.toLowerCase().includes(tab==='camera'?'camera':tab)));
+  document.querySelectorAll('.tab-pane').forEach(el =>
+    el.classList.toggle('active', el.id === `tab-${tab}`));
+  if (tab === 'status') updateStatusPanel();
+  if (tab === 'cache')  renderRegionList();
+  if (tab === 'camera') renderLensGrid();
+}
+function tapSpeed() {
+  tapCount++; clearTimeout(tapTimer);
+  tapTimer = setTimeout(() => tapCount=0, 800);
+  if (tapCount >= 3) { tapCount=0; debugOpen=!debugOpen; debugEl.classList.toggle('hidden',!debugOpen); }
 }
 
-// ═══════════════════════════════════════════════════════
-//  MAP PANEL UPDATE
-// ═══════════════════════════════════════════════════════
-function updateMapPanel() {
-  if (!panelOpen) return;
-  const ahead = activeAlerts.filter(a => a.distFt < 550);
-  document.getElementById('mp-signs').textContent   = ahead.length || '–';
-  document.getElementById('mp-nearest').textContent = ahead.length ? `${ahead[0].distFt} ft` : '–';
-  document.getElementById('mp-heading').textContent = gpsPos ? `${Math.round(gpsPos.heading)}°` : '–';
-  document.getElementById('mp-age').textContent     = osmFetchedAt
-    ? `${Math.round((Date.now() - osmFetchedAt) / 1000)}s ago`
-    : '–';
-}
-
-// ═══════════════════════════════════════════════════════
-//  HEADING CONE SVG
-// ═══════════════════════════════════════════════════════
-function updateCone(headingDeg) {
-  // Draw a small arc sector in the heading direction
-  const cx = 26, cy = 26, r = 20;
-  const halfAngle = HEADING_CONE_DEG;
-  // Convert heading (0=N, CW) to SVG angle (0=right, CCW = -90 offset)
-  const base = headingDeg - 90;
-  const a1 = (base - halfAngle) * Math.PI / 180;
-  const a2 = (base + halfAngle) * Math.PI / 180;
-  const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
-  const x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2);
-  conePath.setAttribute('d', `M${cx},${cy} L${x1},${y1} A${r},${r} 0 0,1 ${x2},${y2} Z`);
-}
-
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  GEO MATH
-// ═══════════════════════════════════════════════════════
-function haversineM(lat1, lon1, lat2, lon2) {
-  const R  = 6371000;
-  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
-  const Δφ = (lat2 - lat1) * Math.PI / 180;
-  const Δλ = (lon2 - lon1) * Math.PI / 180;
-  const a  = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+// ═══════════════════════════════════════════════════
+function haversineM(lat1,lon1,lat2,lon2) {
+  const R=6371000,φ1=lat1*Math.PI/180,φ2=lat2*Math.PI/180;
+  const Δφ=(lat2-lat1)*Math.PI/180,Δλ=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(Δφ/2)**2+Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
-
-function bearingDeg(lat1, lon1, lat2, lon2) {
-  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
-  const Δλ = (lon2 - lon1) * Math.PI / 180;
-  const y  = Math.sin(Δλ) * Math.cos(φ2);
-  const x  = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
-  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+function bearingDeg(lat1,lon1,lat2,lon2) {
+  const φ1=lat1*Math.PI/180,φ2=lat2*Math.PI/180,Δλ=(lon2-lon1)*Math.PI/180;
+  const y=Math.sin(Δλ)*Math.cos(φ2),x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  return((Math.atan2(y,x)*180/Math.PI)+360)%360;
 }
-
-function angleDiff(a, b) {
-  let d = ((a - b) + 360) % 360;
-  return d > 180 ? d - 360 : d;
-}
-
+function angleDiff(a,b) { let d=((a-b)+360)%360; return d>180?d-360:d; }
 function nearestBracket(ft) {
-  for (const b of ALERT_BRACKETS_FT) {
-    if (Math.abs(ft - b) <= BRACKET_WINDOW_FT) return b;
-  }
+  for (const b of CFG.BRACKETS_FT) if (Math.abs(ft-b)<=CFG.BRACKET_WIN_FT) return b;
   return null;
 }
-
-function estimateDist(px, realCm) {
-  return Math.round((realCm * FOCAL_PX) / Math.max(px, 1) / CM_PER_FT);
+function estimateDist(px,realCm) {
+  return Math.round((realCm*CFG.FOCAL_PX)/Math.max(px,1)/CFG.CM_PER_FT);
 }
-
-// ═══════════════════════════════════════════════════════
-//  STATUS HELPERS
-// ═══════════════════════════════════════════════════════
-function setStatus(which, state, text) {
-  const dot = document.getElementById(`${which}-dot`);
-  const txt = document.getElementById(`${which}-txt`);
-  if (dot) dot.className = `dot ${state}`;
-  if (txt) txt.textContent = text;
+function toNode(el) {
+  return { id:el.id, lat:el.lat, lon:el.lon,
+    type: el.tags?.highway==='traffic_signals'?'signal':'stop' };
 }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-function showLoading(msg) { loadMsg.textContent = msg; loadingEl.classList.remove('hidden'); }
+// ═══════════════════════════════════════════════════
+//  STATUS + DEBUG
+// ═══════════════════════════════════════════════════
+function setStatus(which,state,text) {
+  const dot=document.getElementById(`${which}-dot`);
+  const txt=document.getElementById(`${which}-txt`);
+  if (dot) dot.className=`dot ${state}`;
+  if (txt) txt.textContent=text;
+}
+function showLoading(msg) { loadMsg.innerHTML=msg.replace('\n','<br>'); loadingEl.classList.remove('hidden'); }
 function hideLoading()    { loadingEl.classList.add('hidden'); }
-
-// ═══════════════════════════════════════════════════════
-//  DEMO MODE
-// ═══════════════════════════════════════════════════════
-const DEMO_STEPS = [
-  { label:'Driving down Oak Street…', mapHits:[{type:'stop',  distFt:510, nodeId:'d1', source:'map'}], camHits:[] },
-  { label:'Getting closer…',          mapHits:[{type:'stop',  distFt:390, nodeId:'d1', source:'map'}], camHits:[{type:'stop', distFt:370, score:.91, source:'cam'}] },
-  { label:'Map + camera confirm',     mapHits:[{type:'stop',  distFt:200, nodeId:'d1', source:'map'}], camHits:[{type:'stop', distFt:210, score:.94, source:'cam'}] },
-  { label:'Traffic light ahead',      mapHits:[{type:'signal',distFt:440, nodeId:'d2', source:'map'}], camHits:[] },
-  { label:'Unmapped sign detected!',  mapHits:[], camHits:[{type:'stop', distFt:130, score:.87, source:'cam'}] },
-  { label:'Stop sign, last warning',  mapHits:[{type:'stop',  distFt:45,  nodeId:'d1', source:'map'}], camHits:[{type:'stop', distFt:50,  score:.96, source:'cam'}] },
-];
-
-let demoIdx = 0;
-function runDemo() {
-  stopDemo();
-  demoIdx = 0;
-  // Fake GPS
-  setStatus('gps', 'ok', 'Demo GPS');
-  setStatus('osm', 'ok', 'Demo OSM');
-  setStatus('cam', camEnabled ? 'pulse' : '', camEnabled ? 'Demo Cam' : 'Cam off');
-  updateCone(45);
-  speedPill.textContent = '28 mph';
-
-  function step() {
-    if (demoIdx >= DEMO_STEPS.length) { alertWrap.innerHTML = ''; return; }
-    const s = DEMO_STEPS[demoIdx++];
-    fusionMerge(s.mapHits, s.camHits);
-    demoTimer = setTimeout(step, 4000);
-  }
-  step();
+function dbg(msg) {
+  if (!debugOpen) return;
+  const t=new Date().toLocaleTimeString('en',{hour12:false});
+  debugEl.textContent=`[${t}] ${msg}\n`+debugEl.textContent.slice(0,800);
 }
 
-function stopDemo() {
-  if (demoTimer) { clearTimeout(demoTimer); demoTimer = null; }
-}
-
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 //  SERVICE WORKER + VOICE PREWARM
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 }
 if (window.speechSynthesis) {
   speechSynthesis.getVoices();
