@@ -283,7 +283,7 @@
         <button class="action-btn" id="btn-log-copy" onclick="copyLog()" style="flex:1;opacity:0.4;" disabled>📋 Copy log</button>
       </div>
       <div style="margin-top:14px;font-size:10px;color:var(--muted2);text-align:center;line-height:1.6;">
-        DashGuard v33 · DB v4
+        DashGuard v34b · DB v4
       </div>
     </div>
 
@@ -1455,7 +1455,7 @@ function parseOverpassNodes(json) {
       wayId:       nodeWayId[el.id]      || null,
       wayBearings: nodeWayBrgs[el.id]    || null,
       wayFwdBrg:   nodeWayFwdBrg[el.id]  ?? null,
-      direction:   el.tags.direction     || null,
+      direction:   el.tags.direction || el.tags['traffic_signals:direction'] || null,
     }));
 }
 
@@ -1527,8 +1527,10 @@ function evaluateMapAlerts() {
         log('DIR', `Node ${node.id} no dir tag or no wayFwdBrg — skipping dir filter`);
       }
 
-      // 1. Way ID filter — sign must be on the road we're driving
-      if (node.wayId) {
+      // 1. Way ID filter — stop signs only, not signals/blinkers
+      // Traffic signals apply to ALL approaches at an intersection regardless of
+      // which road the node technically belongs to. Only filter stop signs by road.
+      if (node.wayId && node.type === 'stop') {
         if (!currentWayId || node.wayId !== currentWayId) {
           log('WAYID', `Node ${node.id} SKIP wayId=${node.wayId} current=${currentWayId||'null'} dist=${Math.round(distFt)}ft type=${node.type}`);
           dbg(`Skip node ${node.id}: wayId ${node.wayId} ≠ current ${currentWayId||'unknown'}`);
@@ -1536,7 +1538,7 @@ function evaluateMapAlerts() {
         } else {
           log('WAYID', `Node ${node.id} PASS wayId=${node.wayId} matches current dist=${Math.round(distFt)}ft`);
         }
-      } else {
+      } else if (!node.wayId) {
         log('WAYID', `Node ${node.id} no wayId — cone filter only dist=${Math.round(distFt)}ft dir=${node.direction||'none'}`);
       }
 
@@ -1618,8 +1620,18 @@ function mergeAndRender() {
       m.type === c.type && Math.abs(m.distFt - c.distFt) < CFG.FUSION_MATCH_FT
     );
     if (!coveredByMap) {
+      // If map already has ANY active alert of the same type (stop sign),
+      // suppress camera-only — map is source of truth, camera is just confirming
+      const mapHasType = lastMapHits.some(m => m.type === c.type);
+      if (mapHasType) continue;
+
       // Require higher confidence for unmapped camera detections
       if (c.score < CFG.CAM_CONF_CAM_ONLY) continue;
+
+      // Cap camera-only alerts at 500ft — beyond that camera is too unreliable
+      // and the map will catch up once you're in range
+      if (c.distFt > 500) continue;
+
       merged.push({...c, confirmedByCam:false, displaySource:'cam', unmapped:true});
     }
   }
@@ -2188,24 +2200,31 @@ function switchTab(tab) {
 let mapAnimFrame = null;
 
 function drawLiveMap() {
+  // Cancel any stale pending frame
+  if (mapAnimFrame) { clearTimeout(mapAnimFrame); mapAnimFrame = null; }
+  if (activeTab !== 'map') return;
+
   const canvas = document.getElementById('live-map');
   if (!canvas) return;
   const mc = canvas.getContext('2d');
   const W  = canvas.width;
   const H  = canvas.height;
-  mc.clearRect(0,0,W,H);
 
-  // Background
-  mc.fillStyle = '#111';
-  mc.fillRect(0,0,W,H);
+  try {
+    mc.clearRect(0,0,W,H);
 
-  if (!gpsPos) {
-    mc.fillStyle = 'rgba(255,255,255,0.3)';
-    mc.font = '13px -apple-system,sans-serif';
-    mc.textAlign = 'center';
-    mc.fillText('Waiting for GPS…', W/2, H/2);
-    return;
-  }
+    // Background
+    mc.fillStyle = '#111';
+    mc.fillRect(0,0,W,H);
+
+    if (!gpsPos) {
+      mc.fillStyle = 'rgba(255,255,255,0.3)';
+      mc.font = '13px -apple-system,sans-serif';
+      mc.textAlign = 'center';
+      mc.fillText('Waiting for GPS…', W/2, H/2);
+      mapAnimFrame = setTimeout(drawLiveMap, 1000);
+      return;
+    }
 
   const {lat, lon, heading} = gpsPos;
 
@@ -2353,7 +2372,11 @@ function drawLiveMap() {
     `${modeLabel} · ${roadName}${limitStr} (${currentWayId||'?'}) · `+
     `nodes: ${nodesWithWayId} w/wayId, ${nodesWithoutWayId} without`;
 
-  // Auto-refresh when tab is open
+  } catch(e) {
+    console.warn('drawLiveMap error:', e);
+  }
+
+  // Always reschedule — even if draw failed — so map never freezes
   if (activeTab === 'map') {
     mapAnimFrame = setTimeout(drawLiveMap, 1000);
   }
@@ -2369,7 +2392,18 @@ function tapSpeed() {
 //  STATUS PANEL
 // ═══════════════════════════════════
 function updateStatusPanel() {
-  if (!panelOpen||activeTab!=='status') return;
+  // Always update node count regardless of panel state — cheap and important
+  const nodeEl = document.getElementById('st-nodes');
+  if (nodeEl) {
+    const src = cachedRegions.length > 0 ? ' (cache)' : osmFetchedAt ? ' (auto)' : '';
+    nodeEl.textContent = osmNodes.length > 0
+      ? `${osmNodes.length}${src}`
+      : '0 ⚠ no data';
+  }
+
+  // Only update the rest when panel is open and on status tab
+  if (!panelOpen || activeTab !== 'status') return;
+
   const ahead=activeAlerts.filter(a=>a.distFt<CFG.ALERT_MAX_FT);
   document.getElementById('st-signs').textContent   = ahead.length;
   document.getElementById('st-nearest').textContent = ahead.length?`${ahead[0].distFt} ft`:'–';
@@ -2377,7 +2411,6 @@ function updateStatusPanel() {
   document.getElementById('st-heading').textContent = gpsPos?.heading!=null?`${Math.round(gpsPos.heading)}°`:'n/a (no filter)';
   document.getElementById('st-acc').textContent     = gpsPos?`±${Math.round(gpsPos.accuracy)}m`:'–';
   document.getElementById('st-hsrc').textContent    = gpsPos?.headingSrc||'none';
-  document.getElementById('st-nodes').textContent   = osmNodes.length + (osmNodes.length===0?' ⚠ no data':'');
   const curRoad = roads.find(r=>r.id===currentWayId);
   document.getElementById('st-road').textContent    = curRoad ? curRoad.name : (currentWayId ? `way ${currentWayId}` : '–');
   document.getElementById('st-limit').textContent   = currentSpeedLimit ? `${currentSpeedLimit} mph ${speedWarningEnabled?'(warnings on)':'(warnings off)'}` : 'Unknown';
