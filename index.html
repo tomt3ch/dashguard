@@ -204,7 +204,7 @@
 <div id="app">
   <div id="cam-wrap">
     <video id="cam" autoplay playsinline muted></video>
-    <canvas id="overlay"></canvas>
+    <canvas id="overlay" onclick="tapToFocus(event)"></canvas>
     <div id="hud-top">
       <div class="pill"><div class="dot" id="gps-dot"></div><span id="gps-txt">GPS…</span></div>
       <div class="pill"><div class="dot" id="osm-dot"></div><span id="osm-txt">OSM…</span></div>
@@ -283,7 +283,7 @@
         <button class="action-btn" id="btn-log-copy" onclick="copyLog()" style="flex:1;opacity:0.4;" disabled>📋 Copy log</button>
       </div>
       <div style="margin-top:14px;font-size:10px;color:var(--muted2);text-align:center;line-height:1.6;">
-        DashGuard v32 · DB v4
+        DashGuard v33 · DB v4
       </div>
     </div>
 
@@ -405,12 +405,12 @@
 //  CONFIG
 // ═══════════════════════════════════
 const CFG = {
-  OSM_RADIUS_RURAL_M:  8047,  // 5 miles — rural areas, sparse signs
-  OSM_RADIUS_URBAN_M:  4023,  // 2.5 miles — urban areas, dense signs
+  OSM_RADIUS_RURAL_M:  8047,  // 5 miles — rural query radius
+  OSM_RADIUS_URBAN_M:  4023,  // 2.5 miles — urban query radius
   OSM_PROBE_RADIUS_M:  1609,  // 1 mile — initial probe to classify urban vs rural
   OSM_URBAN_DENSITY:   5,     // nodes/km² threshold — above = urban
-  OSM_REFRESH_RURAL_M: 402,   // 0.25 miles between refreshes (rural)
-  OSM_REFRESH_URBAN_M: 241,   // 0.15 miles between refreshes (urban)
+  OSM_REFRESH_RURAL_M: 4023,  // re-query when 2.5mi from last center (edge = 2.5mi away)
+  OSM_REFRESH_URBAN_M: 1609,  // re-query when 1mi from last center
   ALERT_MAX_FT:        26400, // 5 miles in feet — show all loaded nodes
   ALERT_MIN_FT:        8,
   HEADING_CONE_DEG:  30,     // tight cone — only signs clearly straight ahead
@@ -818,8 +818,76 @@ function processCamPredictions(preds) {
 }
 
 // ═══════════════════════════════════
-//  CAMERA
+//  TAP TO FOCUS
 // ═══════════════════════════════════
+let focusLocked = false;
+
+async function tapToFocus(e) {
+  if (!videoStream || !camEnabled) return;
+  const track = videoStream.getVideoTracks()[0];
+  if (!track) return;
+
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  const rect  = e.target.getBoundingClientRect();
+  const x     = (e.clientX - rect.left) / rect.width;
+  const y     = (e.clientY - rect.top)  / rect.height;
+
+  // Show focus ring at tap point
+  showFocusRing(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+
+  // Build constraints based on what this device supports
+  const constraints = {};
+
+  if (caps.focusMode && caps.focusMode.includes('manual')) {
+    constraints.focusMode = 'manual';
+  } else if (caps.focusMode && caps.focusMode.includes('single-shot')) {
+    constraints.focusMode = 'single-shot';
+  }
+
+  if (caps.pointsOfInterest) {
+    constraints.pointsOfInterest = [{x, y}];
+  }
+
+  if (Object.keys(constraints).length === 0) {
+    // Device doesn't support focus constraints — show message
+    dbg('Focus: device does not support tap-to-focus');
+    return;
+  }
+
+  try {
+    await track.applyConstraints({advanced: [constraints]});
+    focusLocked = true;
+    dbg(`Focus locked at ${x.toFixed(2)},${y.toFixed(2)}`);
+    log('CAM', `Focus locked at ${x.toFixed(2)},${y.toFixed(2)} mode=${constraints.focusMode||'auto'}`);
+  } catch(err) {
+    dbg(`Focus failed: ${err.message}`);
+    console.warn('Focus:', err);
+  }
+}
+
+function showFocusRing(x, y, w, h) {
+  // Draw a focus ring on the overlay at the tap point
+  const size = Math.min(w, h) * 0.12;
+  ctx.save();
+  ctx.strokeStyle = '#FFD700';
+  ctx.lineWidth   = 2;
+  ctx.strokeRect(x - size/2, y - size/2, size, size);
+  // Corner marks
+  const c = size * 0.25;
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth   = 1.5;
+  // TL
+  ctx.beginPath(); ctx.moveTo(x-size/2, y-size/2+c); ctx.lineTo(x-size/2, y-size/2); ctx.lineTo(x-size/2+c, y-size/2); ctx.stroke();
+  // TR
+  ctx.beginPath(); ctx.moveTo(x+size/2-c, y-size/2); ctx.lineTo(x+size/2, y-size/2); ctx.lineTo(x+size/2, y-size/2+c); ctx.stroke();
+  // BL
+  ctx.beginPath(); ctx.moveTo(x-size/2, y+size/2-c); ctx.lineTo(x-size/2, y+size/2); ctx.lineTo(x-size/2+c, y+size/2); ctx.stroke();
+  // BR
+  ctx.beginPath(); ctx.moveTo(x+size/2-c, y+size/2); ctx.lineTo(x+size/2, y+size/2); ctx.lineTo(x+size/2, y+size/2-c); ctx.stroke();
+  ctx.restore();
+  // Fade out after 1.5s
+  setTimeout(()=>{ if (!lastCamHits.length) ctx.clearRect(0,0,overlayEl.width,overlayEl.height); }, 1500);
+}
 async function startCamera(deviceId) {
   if (videoStream) stopCamera();
   try {
@@ -964,28 +1032,33 @@ function onGPSUpdate(pos) {
   gpsPos={lat,lon,heading:resolvedHeading,headingSrc,speedMph,accuracy};
   setStatus('gps','ok',`GPS ±${Math.round(accuracy)}m`);
 
-  // Speed pill — show speed and limit, red if over
+  // Speed pill — show speed and limit, red if 1mph over
   const spdMph   = Math.round(speedMph);
   const pillEl   = document.getElementById('speed-pill');
-  const overLimit = speedWarningEnabled && currentSpeedLimit &&
-                    speedMph > currentSpeedLimit + 5 && speedMph > 1;
+  const over1    = speedWarningEnabled && currentSpeedLimit && speedMph > currentSpeedLimit + 1 && speedMph > 1;
+  const over5    = speedWarningEnabled && currentSpeedLimit && speedMph > currentSpeedLimit + 5;
+  const over8    = speedWarningEnabled && currentSpeedLimit && speedMph > currentSpeedLimit + 8;
   if (currentSpeedLimit && speedMph > 1) {
     pillEl.textContent = `${spdMph} / ${currentSpeedLimit} mph`;
-    pillEl.style.color = overLimit ? '#FF5555' : '';
-    pillEl.style.fontWeight = overLimit ? '800' : '';
+    pillEl.style.color      = over1 ? '#FF5555' : '';
+    pillEl.style.fontWeight = over1 ? '800' : '';
   } else {
     pillEl.textContent = speedMph > 1 ? `${spdMph} mph` : '– mph';
     pillEl.style.color = '';
     pillEl.style.fontWeight = '';
   }
 
-  // Speed warning
-  if (overLimit && !muted) {
+  // Speed warning — 3 tiers, repeat every 5 seconds
+  if (over1 && !muted) {
     const now = Date.now();
-    if (now - lastSpeedWarning > 10000) {
+    if (now - lastSpeedWarning > 5000) {
       lastSpeedWarning = now;
-      log('SPEED', `SLOW DOWN: ${spdMph}mph in ${currentSpeedLimit}mph zone`);
-      speak('Slow down.');
+      let phrase;
+      if (over8)      phrase = 'Slow down now!';
+      else if (over5) phrase = 'Slow down immediately.';
+      else            phrase = 'Slow down.';
+      log('SPEED', `${phrase} ${spdMph}mph in ${currentSpeedLimit}mph zone`);
+      speak(phrase);
     }
   }
 
@@ -997,9 +1070,10 @@ function onGPSUpdate(pos) {
     if (needsQuery) fetchOSMNodes(lat,lon);
     else evaluateMapAlerts();
 
-    // Road network for snap-to-road (separate smaller query)
+    // Road network — only fetch when entering a new tile (roads don't change often)
+    const currentTileKey = roadTileKey(lat, lon);
     const needsRoads = !lastRoadQueryPos ||
-      haversineM(lat,lon,lastRoadQueryPos.lat,lastRoadQueryPos.lon) > ROAD_SNAP_REFRESH_M;
+      roadTileKey(lastRoadQueryPos.lat, lastRoadQueryPos.lon) !== currentTileKey;
     if (needsRoads) fetchRoads(lat, lon);
     else snapToRoad(lat, lon);
   }
@@ -1032,8 +1106,9 @@ let osmFetchRetryTimer = null;
 let osmFetchAttempt   = 0;
 
 async function fetchOSMNodes(lat, lon) {
-  // DON'T set lastQueryPos here — only set it on success
-  // so a failed fetch allows a retry on the next GPS update
+  // Set lastQueryPos immediately so GPS jitter doesn't spawn duplicate fetches
+  // while this query is in-flight. Will be re-set on success too.
+  lastQueryPos = {lat, lon};
 
   // If cached coverage exists, load all nodes from DB
   if (hasCachedCoverage(lat,lon) && db) {
@@ -1073,7 +1148,7 @@ async function fetchOSMNodes(lat, lon) {
 
   if (nodes === null) {
     osmFetchAttempt++;
-    // Exponential backoff: 15s, 30s, 60s, 120s max
+    lastQueryPos = null; // allow retry timer to re-trigger
     const retryMs = Math.min(15000 * Math.pow(2, osmFetchAttempt - 1), 120000);
     setStatus('osm','err',`OSM fail — retry in ${Math.round(retryMs/1000)}s`);
     if (osmNodes.length > 0) evaluateMapAlerts(); // use stale data if any
