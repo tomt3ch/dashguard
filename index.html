@@ -271,7 +271,7 @@
       <div class="info-row"><span>Status</span><span class="info-val" id="st-audio">–</span></div>
       <button class="action-btn" style="margin-top:10px;" onclick="testAudio()">🔊 Test voice alert</button>
       <div style="margin-top:14px;font-size:10px;color:var(--muted2);text-align:center;line-height:1.6;">
-        DashGuard v26b · DB v4
+        DashGuard v27 · DB v4
       </div>
     </div>
 
@@ -358,7 +358,7 @@
         <span style="color:#4CAF50">⬤</span> Will alert &nbsp;
         <span style="color:#EF9F27">⬤</span> Watching &nbsp;
         <span style="color:#E24B4A">⬤</span> Suppressed &nbsp;
-        <span style="color:rgba(255,255,255,0.3)">⬤</span> Out of cone
+        <span style="color:rgba(226,75,74,0.4)">⬤</span> Wrong road
       </div>
       <canvas id="live-map" width="320" height="320"
         style="width:100%;border-radius:10px;background:#111;display:block;"></canvas>
@@ -1981,13 +1981,13 @@ function drawLiveMap() {
   mc.textAlign = 'center';
   mc.fillText('N', W/2, 16);
 
-  // Classify every in-range node into one of four states:
-  // WILL_FIRE   — in activeAlerts, distance decreasing, alert will trigger
-  // SEEDED      — in nodePrevDist but not active yet (first-sight, needs 2nd confirm)
-  // SUPPRESSED  — in nodePrevDist, distance growing, filtered out
-  // OUT_OF_CONE — in range but outside heading cone or way-bearing filter
-  const activeIds    = new Set(activeAlerts.map(a=>a.nodeId));
-  const seededIds    = new Set(Object.keys(nodePrevDist).map(Number));
+  // Classify every in-range node into states matching the actual filter logic:
+  // GREEN    — in activeAlerts, will fire
+  // RED      — wrong road (wayId mismatch) or suppressed (distance growing)
+  // AMBER    — seeded, watching for 2nd GPS confirm
+  // GRAY     — out of cone or no wayId data
+  const activeIds = new Set(activeAlerts.map(a=>a.nodeId));
+  const seededIds = new Set(Object.keys(nodePrevDist).map(Number));
 
   for (const node of osmNodes) {
     const distFt = haversineM(lat, lon, node.lat, node.lon) / CFG.M_PER_FT;
@@ -1998,9 +1998,11 @@ function drawLiveMap() {
     const px   = W/2 + Math.sin(brg) * distM / CFG.M_PER_FT * ftToPx;
     const py   = H/2 - Math.cos(brg) * distM / CFG.M_PER_FT * ftToPx;
 
+    // Replicate the actual wayId filter from evaluateMapAlerts
+    const wrongRoad = node.wayId && (!currentWayId || node.wayId !== currentWayId);
+
     const isActive     = activeIds.has(node.id);
     const isSeeded     = !isActive && seededIds.has(node.id);
-    // Suppressed = was seeded, distance now growing
     const prevD        = nodePrevDist[node.id];
     const isSuppressed = isSeeded && prevD !== undefined &&
       haversineM(lat,lon,node.lat,node.lon)/CFG.M_PER_FT > prevD + 20;
@@ -2008,25 +2010,17 @@ function drawLiveMap() {
     let color, radius, label;
 
     if (isActive) {
-      // GREEN — will fire an alert
-      color  = node.type==='signal' ? '#4CAF50' : '#4CAF50';
-      radius = 9;
-      label  = `${Math.round(distFt)}ft`;
+      color  = '#4CAF50'; radius = 9; label = `${Math.round(distFt)}ft`;
+    } else if (wrongRoad) {
+      // Wrong road — dimmed out, clearly not our concern
+      color  = 'rgba(226,75,74,0.35)'; radius = 4; label = null;
     } else if (isSuppressed) {
-      // RED/ORANGE — actively suppressed (distance growing = wrong road)
-      color  = '#E24B4A';
-      radius = 6;
-      label  = null;
+      color  = '#E24B4A'; radius = 6; label = null;
     } else if (isSeeded) {
-      // AMBER — seeded, watching, not yet confirmed as approach
-      color  = '#EF9F27';
-      radius = 6;
-      label  = null;
+      color  = '#EF9F27'; radius = 6; label = null;
     } else {
-      // GRAY — in range but outside cone/way-bearing filter, not being tracked
-      color  = node.type==='signal' ? 'rgba(100,180,255,0.25)' : 'rgba(255,255,255,0.18)';
-      radius = 4;
-      label  = null;
+      color  = node.type==='signal' ? 'rgba(100,180,255,0.2)' : 'rgba(255,255,255,0.15)';
+      radius = 3; label = null;
     }
 
     // Draw node
