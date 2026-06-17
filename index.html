@@ -1204,12 +1204,16 @@ function distToSegmentM(plat, plon, lat1, lon1, lat2, lon2) {
 
 function parseOverpassNodes(json) {
   const nodeCoords  = {};
-  const nodeWayId   = {};  // nodeId → first way that contains it (the road it controls)
-  const nodeWayBrgs = {};  // nodeId → [bearings] for heading filter fallback
+  const nodeWayId   = {};
+  const nodeWayBrgs = {};
+  // For each sign node, store the bearing of the way in the FORWARD direction
+  // so we can compare to our heading and determine if the sign faces us
+  const nodeWayFwdBrg = {}; // nodeId → bearing of way in forward direction
 
   for (const el of json.elements) {
     if (el.type === 'node') nodeCoords[el.id] = {lat:el.lat, lon:el.lon};
   }
+
   for (const el of json.elements) {
     if (el.type !== 'way' || !el.nodes) continue;
     for (let i = 0; i < el.nodes.length - 1; i++) {
@@ -1218,9 +1222,9 @@ function parseOverpassNodes(json) {
       if (!a || !b) continue;
       const brg = bearingDeg(a.lat, a.lon, b.lat, b.lon);
       for (const nid of el.nodes) {
-        // wayId: first way found wins — stop signs belong to exactly one road
-        if (!nodeWayId[nid])   nodeWayId[nid] = el.id;
-        if (!nodeWayBrgs[nid]) nodeWayBrgs[nid] = [];
+        if (!nodeWayId[nid])      nodeWayId[nid] = el.id;
+        if (!nodeWayBrgs[nid])    nodeWayBrgs[nid] = [];
+        if (!nodeWayFwdBrg[nid])  nodeWayFwdBrg[nid] = brg; // forward = way draw direction
         nodeWayBrgs[nid].push(brg);
         nodeWayBrgs[nid].push((brg + 180) % 360);
       }
@@ -1235,8 +1239,10 @@ function parseOverpassNodes(json) {
       lat:         el.lat,
       lon:         el.lon,
       type:        el.tags.highway === 'traffic_signals' ? 'signal' : 'stop',
-      wayId:       nodeWayId[el.id]   || null,   // road this sign controls
-      wayBearings: nodeWayBrgs[el.id] || null,   // fallback for heading filter
+      wayId:       nodeWayId[el.id]      || null,
+      wayBearings: nodeWayBrgs[el.id]    || null,
+      wayFwdBrg:   nodeWayFwdBrg[el.id]  ?? null, // bearing of way in OSM forward direction
+      direction:   el.tags.direction     || null,  // 'forward', 'backward', 'both', or null
     }));
 }
 
@@ -1267,15 +1273,33 @@ function evaluateMapAlerts() {
     if (distFt > CFG.ALERT_MAX_FT || distFt < minFt) continue;
 
     if (heading!=null && speedMph>=CFG.HEADING_MIN_MPH) {
-      // 0. Way ID filter — PRIMARY: sign must be on the road we're driving
-      //    If we have a current way ID AND the sign has a way ID,
-      //    and they don't match → skip. This catches cross-street signs correctly.
+      // 0. Direction filter — PRIMARY, most reliable
+      // OSM direction tag tells us which way of travel the sign controls:
+      //   direction=forward  → sign faces traffic going in the way's draw direction
+      //   direction=backward → sign faces traffic going AGAINST the way's draw direction
+      //   direction=both/null → sign applies to all traffic (e.g. at T-junction)
+      // We compare wayFwdBrg (the way's forward bearing) to our heading to determine
+      // if we're travelling forward or backward along the way, then check the tag.
+      if (node.direction && node.wayFwdBrg !== null) {
+        const weAreForward = Math.abs(angleDiff(heading, node.wayFwdBrg)) < 90;
+        const signFacesUs  =
+          (node.direction === 'both' || node.direction === 'all') ? true :
+          node.direction === 'forward'  ? weAreForward :
+          node.direction === 'backward' ? !weAreForward :
+          true; // unknown direction value — allow through
+        if (!signFacesUs) {
+          dbg(`Skip node ${node.id}: direction=${node.direction} wayFwd=${Math.round(node.wayFwdBrg)}° heading=${Math.round(heading)}° (wrong direction)`);
+          continue;
+        }
+      }
+
+      // 1. Way ID filter — sign's road must match our road
       if (currentWayId && node.wayId && node.wayId !== currentWayId) {
         dbg(`Skip node ${node.id}: wayId ${node.wayId} ≠ current ${currentWayId}`);
         continue;
       }
 
-      // 1. Cone filter (fallback when way IDs not available)
+      // 2. Cone filter
       const bearing = bearingDeg(lat, lon, node.lat, node.lon);
       const diff    = angleDiff(bearing, heading);
       if (Math.abs(diff) > CFG.HEADING_CONE_DEG) continue;
