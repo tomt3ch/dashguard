@@ -1397,7 +1397,11 @@ function evaluateMapAlerts() {
   hits.sort((a,b)=>a.distFt-b.distFt);
   lastMapHits=hits;
   mergeAndRender();
-  dbg(`Map:${hits.length} hdg:${heading!=null?Math.round(heading)+'°':'off'} spd:${Math.round(speedMph)}mph la:${Math.round(lookAheadFt)}ft`);
+
+  // Diagnostic: show wayId state
+  const hasWayId = osmNodes.filter(n=>n.wayId).length;
+  const sample = osmNodes.slice(0,3).map(n=>`${n.id}:wayId=${n.wayId||'NULL'}`).join(' ');
+  dbg(`Map:${hits.length} road:${currentWayId||'null'} nodes:${osmNodes.length}(${hasWayId} w/wayId) | ${sample}`);
 }
 
 // ═══════════════════════════════════
@@ -2099,9 +2103,15 @@ function drawLiveMap() {
   const currentRoad = roads.find(r=>r.id===currentWayId);
   const roadName    = currentRoad ? currentRoad.name : (roads.length ? 'no snap' : 'no roads');
   const scaleLabel  = scaleFt >= 1000 ? `${(scaleFt/5280).toFixed(1)} mi` : `${Math.round(scaleFt)} ft`;
-  const modeLabel   = headingUp ? '▲ heading-up' : '⬆ north-up';
+  const modeLabel   = headingUp ? '▲' : '⬆N';
+
+  // Diagnostic: show wayId state for nodes
+  const nodesWithWayId    = osmNodes.filter(n=>n.wayId).length;
+  const nodesWithoutWayId = osmNodes.filter(n=>!n.wayId).length;
+
   document.getElementById('map-scale').textContent =
-    `${modeLabel} · ${scaleLabel} · ${roadName} · ${osmNodes.length} nodes`;
+    `${modeLabel} · ${roadName} (${currentWayId||'?'}) · `+
+    `nodes: ${nodesWithWayId} w/wayId, ${nodesWithoutWayId} without`;
 
   // Auto-refresh when tab is open
   if (activeTab === 'map') {
