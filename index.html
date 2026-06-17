@@ -361,7 +361,8 @@
         <span style="color:rgba(226,75,74,0.4)">⬤</span> Wrong road
       </div>
       <canvas id="live-map" width="320" height="320"
-        style="width:100%;border-radius:10px;background:#111;display:block;"></canvas>
+        onclick="toggleHeadingMode();drawLiveMap();"
+        style="width:100%;border-radius:10px;background:#111;display:block;cursor:pointer;"></canvas>
       <div id="map-scale" style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center;">Scale: –</div>
     </div>
 
@@ -424,7 +425,7 @@ let tfModel=null, videoStream=null, detecting=false, rafId=null;
 let muted=false, mapEnabled=true, camEnabled=true;
 let panelOpen=false, activeTab='status';
 let tapCount=0, tapTimer=null, debugOpen=false;
-let headingUp=false; // false=north-up, true=heading-up
+let headingUp=true; // default heading-up so map always shows travel direction at top
 let selectedDeviceId=null, availableLenses=[];
 let gpsPos=null, lastQueryPos=null, gpsWatchId=null, compassHeading=null;
 let osmNodes=[], osmFetchedAt=null, urbanMode=null;
@@ -1952,6 +1953,16 @@ function drawLiveMap() {
 
   const {lat, lon, heading} = gpsPos;
 
+  // Rotation: in heading-up mode rotate canvas so travel direction = up
+  // All subsequent drawing uses rotated coordinates automatically
+  const mapRotRad = (headingUp && heading != null) ? -heading * Math.PI / 180 : 0;
+  if (mapRotRad !== 0) {
+    mc.save();
+    mc.translate(W/2, H/2);
+    mc.rotate(mapRotRad);
+    mc.translate(-W/2, -H/2);
+  }
+
   // Scale: show 2500ft radius — find max alert distance for dynamic scale
   const maxDist = Math.max(500, ...activeAlerts.map(a=>a.distFt), 500);
   const scaleFt = Math.min(maxDist * 1.3, CFG.ALERT_MAX_FT);
@@ -1970,16 +1981,16 @@ function drawLiveMap() {
     mc.fillText(`${ring}ft`, W/2+4, H/2-r+10);
   }
 
-  // North line
+  // Direction label — N in north-up, travel arrow in heading-up
   mc.strokeStyle = 'rgba(255,255,255,0.1)';
   mc.setLineDash([3,3]);
   mc.beginPath(); mc.moveTo(W/2,20); mc.lineTo(W/2,H-20); mc.stroke();
   mc.beginPath(); mc.moveTo(20,H/2); mc.lineTo(W-20,H/2); mc.stroke();
   mc.setLineDash([]);
-  mc.fillStyle = 'rgba(255,255,255,0.2)';
+  mc.fillStyle = 'rgba(255,255,255,0.25)';
   mc.font = '9px -apple-system,sans-serif';
   mc.textAlign = 'center';
-  mc.fillText('N', W/2, 16);
+  mc.fillText(headingUp ? '▲' : 'N', W/2, 14);
 
   // Classify every in-range node into states matching the actual filter logic:
   // GREEN    — in activeAlerts, will fire
@@ -2055,19 +2066,20 @@ function drawLiveMap() {
     }
   }
 
-  // Heading cone
+  // Heading cone — in heading-up mode canvas is already rotated so cone always points up
   if (heading != null) {
     const coneAngle = CFG.HEADING_CONE_DEG * Math.PI/180;
     const coneLen   = (W/2) * 0.85;
-    const hdgR      = (heading - 90) * Math.PI/180;
+    // In heading-up: canvas rotated, so forward = up = -90° in canvas space
+    // In north-up: forward = heading direction
+    const hdgR = headingUp ? -Math.PI/2 : (heading - 90) * Math.PI/180;
     mc.fillStyle = 'rgba(55,138,221,0.08)';
     mc.beginPath();
     mc.moveTo(W/2, H/2);
     mc.arc(W/2, H/2, coneLen, hdgR - coneAngle, hdgR + coneAngle);
     mc.closePath();
     mc.fill();
-    // Heading arrow
-    mc.strokeStyle = 'rgba(55,138,221,0.6)';
+    mc.strokeStyle = 'rgba(55,138,221,0.5)';
     mc.lineWidth = 1.5;
     mc.beginPath();
     mc.moveTo(W/2, H/2);
@@ -2081,11 +2093,15 @@ function drawLiveMap() {
   mc.fillStyle = '#fff';
   mc.beginPath(); mc.arc(W/2,H/2,3,0,Math.PI*2); mc.fill();
 
+  // Restore canvas transform if we rotated it
+  if (mapRotRad !== 0) mc.restore();
+
   const currentRoad = roads.find(r=>r.id===currentWayId);
   const roadName    = currentRoad ? currentRoad.name : (roads.length ? 'no snap' : 'no roads');
   const scaleLabel  = scaleFt >= 1000 ? `${(scaleFt/5280).toFixed(1)} mi` : `${Math.round(scaleFt)} ft`;
+  const modeLabel   = headingUp ? '▲ heading-up' : '⬆ north-up';
   document.getElementById('map-scale').textContent =
-    `Scale: ${scaleLabel} · Road: ${roadName} · ${osmNodes.length} nodes`;
+    `${modeLabel} · ${scaleLabel} · ${roadName} · ${osmNodes.length} nodes`;
 
   // Auto-refresh when tab is open
   if (activeTab === 'map') {
