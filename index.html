@@ -1041,11 +1041,13 @@ function classifyDensity(lat, lon, nodeCount, radiusM) {
 }
 
 async function runOverpassQuery(lat, lon, radiusM, timeout) {
+  // Use 'out geom' instead of 'out skel qt' so way geometry (lat/lon per node)
+  // is returned inline — this guarantees we can compute wayFwdBrg for every sign node
   const q = `[out:json][timeout:${timeout}];(`
     + `node["highway"="stop"](around:${radiusM},${lat},${lon});`
     + `node["highway"="traffic_signals"](around:${radiusM},${lat},${lon});`
     + `node["highway"="give_way"](around:${radiusM},${lat},${lon});`
-    + `);out body;>;out skel qt;`;
+    + `);out body;>;out geom qt;`;
   try {
     const res  = await fetch('https://overpass-api.de/api/interpreter', {
       method:  'POST',
@@ -1206,29 +1208,58 @@ function parseOverpassNodes(json) {
   const nodeCoords  = {};
   const nodeWayId   = {};
   const nodeWayBrgs = {};
-  // For each sign node, store the bearing of the way in the FORWARD direction
-  // so we can compare to our heading and determine if the sign faces us
-  const nodeWayFwdBrg = {}; // nodeId → bearing of way in forward direction
+  const nodeWayFwdBrg = {};
 
+  // Build coord map from all nodes in response
   for (const el of json.elements) {
     if (el.type === 'node') nodeCoords[el.id] = {lat:el.lat, lon:el.lon};
   }
 
   for (const el of json.elements) {
-    if (el.type !== 'way' || !el.nodes) continue;
-    for (let i = 0; i < el.nodes.length - 1; i++) {
-      const a = nodeCoords[el.nodes[i]];
-      const b = nodeCoords[el.nodes[i+1]];
-      if (!a || !b) continue;
-      const brg = bearingDeg(a.lat, a.lon, b.lat, b.lon);
-      for (const nid of el.nodes) {
-        if (!nodeWayId[nid])      nodeWayId[nid] = el.id;
-        if (!nodeWayBrgs[nid])    nodeWayBrgs[nid] = [];
-        if (!nodeWayFwdBrg[nid])  nodeWayFwdBrg[nid] = brg; // forward = way draw direction
-        nodeWayBrgs[nid].push(brg);
-        nodeWayBrgs[nid].push((brg + 180) % 360);
+    if (el.type !== 'way') continue;
+
+    // 'out geom qt' returns geometry inline as el.geometry array [{lat,lon},...]
+    // 'out skel qt' returns only node IDs — we prefer geom for reliable bearing
+    let coords = null;
+    if (el.geometry && el.geometry.length >= 2) {
+      // Inline geometry — most reliable
+      coords = el.geometry;
+    } else if (el.nodes && el.nodes.length >= 2) {
+      // Fall back to node ID lookup
+      const pts = el.nodes.map(id => nodeCoords[id]).filter(Boolean);
+      if (pts.length >= 2) coords = pts;
+    }
+
+    if (!coords || coords.length < 2) continue;
+
+    // Use first segment for forward bearing
+    const a = coords[0], b = coords[1];
+    const brg = bearingDeg(a.lat, a.lon, b.lat, b.lon);
+
+    // Assign to all member node IDs
+    const nodeIds = el.nodes || el.geometry?.map((_,i) => i); // fallback index if no node IDs
+    const memberIds = el.nodes || [];
+
+    for (const nid of memberIds) {
+      if (!nodeWayId[nid])     nodeWayId[nid]    = el.id;
+      if (!nodeWayFwdBrg[nid]) nodeWayFwdBrg[nid] = brg;
+      if (!nodeWayBrgs[nid])   nodeWayBrgs[nid]  = [];
+      nodeWayBrgs[nid].push(brg);
+      nodeWayBrgs[nid].push((brg + 180) % 360);
+    }
+
+    // Also assign to geometry coords that match sign node positions
+    // (handles case where way uses geometry but no node ID list)
+    if (!el.nodes && el.geometry) {
+      for (const pt of el.geometry) {
+        // Find sign nodes at this location
+        for (const [nid, coord] of Object.entries(nodeCoords)) {
+          if (Math.abs(coord.lat - pt.lat) < 0.000001 && Math.abs(coord.lon - pt.lon) < 0.000001) {
+            if (!nodeWayId[nid])     nodeWayId[nid]     = el.id;
+            if (!nodeWayFwdBrg[nid]) nodeWayFwdBrg[nid] = brg;
+          }
+        }
       }
-      break;
     }
   }
 
@@ -1241,8 +1272,8 @@ function parseOverpassNodes(json) {
       type:        el.tags.highway === 'traffic_signals' ? 'signal' : 'stop',
       wayId:       nodeWayId[el.id]      || null,
       wayBearings: nodeWayBrgs[el.id]    || null,
-      wayFwdBrg:   nodeWayFwdBrg[el.id]  ?? null, // bearing of way in OSM forward direction
-      direction:   el.tags.direction     || null,  // 'forward', 'backward', 'both', or null
+      wayFwdBrg:   nodeWayFwdBrg[el.id]  ?? null,
+      direction:   el.tags.direction     || null,
     }));
 }
 
@@ -1281,14 +1312,30 @@ function evaluateMapAlerts() {
       // We compare wayFwdBrg (the way's forward bearing) to our heading to determine
       // if we're travelling forward or backward along the way, then check the tag.
       if (node.direction && node.wayFwdBrg !== null) {
-        const weAreForward = Math.abs(angleDiff(heading, node.wayFwdBrg)) < 90;
-        const signFacesUs  =
-          (node.direction === 'both' || node.direction === 'all') ? true :
-          node.direction === 'forward'  ? weAreForward :
-          node.direction === 'backward' ? !weAreForward :
-          true; // unknown direction value — allow through
+        const dir = node.direction;
+        const numericBearing = parseFloat(dir);
+        let signFacesUs;
+
+        if (!isNaN(numericBearing)) {
+          // Numeric compass bearing — the sign faces traffic coming FROM that direction
+          // e.g. direction=120 means sign faces traffic approaching from 120°
+          // Traffic approaching from 120° is heading ~300° (opposite direction)
+          // We alert if our heading is within 45° of the direction the sign faces
+          const signFacingBearing = (numericBearing + 180) % 360; // direction traffic travels TO the sign
+          signFacesUs = Math.abs(angleDiff(heading, signFacingBearing)) < 45;
+        } else if (dir === 'both' || dir === 'all') {
+          signFacesUs = true;
+        } else if (dir === 'forward') {
+          signFacesUs = Math.abs(angleDiff(heading, node.wayFwdBrg)) < 45;
+        } else if (dir === 'backward') {
+          signFacesUs = Math.abs(angleDiff(heading, node.wayFwdBrg)) >= 135;
+        } else {
+          // Unknown string value — fall back to cone filter only, don't auto-allow
+          signFacesUs = Math.abs(angleDiff(bearingDeg(lat,lon,node.lat,node.lon), heading)) < CFG.HEADING_CONE_DEG;
+        }
+
         if (!signFacesUs) {
-          dbg(`Skip node ${node.id}: direction=${node.direction} wayFwd=${Math.round(node.wayFwdBrg)}° heading=${Math.round(heading)}° (wrong direction)`);
+          dbg(`Skip node ${node.id}: direction=${dir} heading=${Math.round(heading)}° (wrong direction)`);
           continue;
         }
       }
@@ -1643,7 +1690,7 @@ async function downloadBBox(bbox, label, onProgress) {
         +`node["highway"="stop"](${box});`
         +`node["highway"="traffic_signals"](${box});`
         +`node["highway"="give_way"](${box});`
-        +`);out body;>;out skel qt;`;
+        +`);out body;>;out geom qt;`;
 
       // Roads query
       const qRoads=`[out:json][timeout:28];`
