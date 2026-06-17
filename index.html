@@ -366,10 +366,14 @@
 //  CONFIG
 // ═══════════════════════════════════
 const CFG = {
-  OSM_RADIUS_M:      2000,   // load nodes within 2000m of GPS position
-  OSM_REFRESH_M:     150,
-  ALERT_MAX_FT:      2500,   // alert up to 2500ft ahead (~760m, matches OSM radius)
-  ALERT_MIN_FT:      8,
+  OSM_RADIUS_RURAL_M:  8047,  // 5 miles — rural areas, sparse signs
+  OSM_RADIUS_URBAN_M:  4023,  // 2.5 miles — urban areas, dense signs
+  OSM_PROBE_RADIUS_M:  1609,  // 1 mile — initial probe to classify urban vs rural
+  OSM_URBAN_DENSITY:   5,     // nodes/km² threshold — above = urban
+  OSM_REFRESH_RURAL_M: 402,   // 0.25 miles between refreshes (rural)
+  OSM_REFRESH_URBAN_M: 241,   // 0.15 miles between refreshes (urban)
+  ALERT_MAX_FT:        26400, // 5 miles in feet — show all loaded nodes
+  ALERT_MIN_FT:        8,
   HEADING_CONE_DEG:  30,     // tight cone — only signs clearly straight ahead
   HEADING_MIN_MPH:   5,
   BRACKETS_FT:       [500,400,300,200,100,50],  // even number brackets
@@ -397,9 +401,10 @@ let tapCount=0, tapTimer=null, debugOpen=false;
 let headingUp=false; // false=north-up, true=heading-up
 let selectedDeviceId=null, availableLenses=[];
 let gpsPos=null, lastQueryPos=null, gpsWatchId=null, compassHeading=null;
-let osmNodes=[], osmFetchedAt=null;
+let osmNodes=[], osmFetchedAt=null, urbanMode=null; // null=unclassified, true=urban, false=rural
 let db=null, cachedRegions=[];
 let lastMapHits=[], lastCamHits=[], activeAlerts=[], lastSpoken={};
+let nodePrevDist={}; // nodeId → last known distance in ft — used to detect approach vs passing
 
 // ═══════════════════════════════════
 //  DOM
@@ -851,8 +856,9 @@ function onGPSUpdate(pos) {
     speedMph>1 ? `${Math.round(speedMph)} mph` : '– mph';
   updateCone(resolvedHeading);
   if (mapEnabled) {
+    const refreshM = urbanMode ? CFG.OSM_REFRESH_URBAN_M : CFG.OSM_REFRESH_RURAL_M;
     const needsQuery = !lastQueryPos ||
-      haversineM(lat,lon,lastQueryPos.lat,lastQueryPos.lon)>CFG.OSM_REFRESH_M;
+      haversineM(lat,lon,lastQueryPos.lat,lastQueryPos.lon) > refreshM;
     if (needsQuery) fetchOSMNodes(lat,lon);
     else evaluateMapAlerts();
   }
@@ -879,89 +885,128 @@ function onOrientation(e) {
 }
 
 // ═══════════════════════════════════
-//  OSM FETCH
+//  OSM FETCH — adaptive urban/rural radius
 // ═══════════════════════════════════
 async function fetchOSMNodes(lat, lon) {
-  lastQueryPos={lat,lon};
+  lastQueryPos = {lat, lon};
 
-  // If cached coverage exists, load ALL nodes for that region into memory.
-  // evaluateMapAlerts() handles distance + heading filtering in JS — no need
-  // to pre-filter in the DB query (which caused the "2 nodes" problem).
+  // If cached coverage exists, load all nodes from DB
   if (hasCachedCoverage(lat,lon) && db) {
     const allCached = await idbGetAll('nodes').catch(()=>[]);
-    if (allCached.length>0) {
-      osmNodes=allCached; osmFetchedAt=Date.now();
-      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
+    if (allCached.length > 0) {
+      osmNodes = allCached; osmFetchedAt = Date.now();
+      // Classify from cached data
+      if (urbanMode === null) classifyDensity(lat, lon);
+      setStatus('osm','ok',`OSM: ${osmNodes.length} (${urbanMode?'urban':'rural'} cache)`);
       evaluateMapAlerts();
       updateStatusPanel();
       return;
     }
   }
 
-  // No cache — live Overpass query
-  // Fetch nodes AND the ways they belong to — needed to determine which road
-  // the sign faces, so we don't alert for signs on cross streets
-  setStatus('osm','warn','Fetching OSM…');
-  const r=CFG.OSM_RADIUS_M;
-  const q=`[out:json][timeout:20];(`
-    +`node["highway"="stop"](around:${r},${lat},${lon});`
-    +`node["highway"="traffic_signals"](around:${r},${lat},${lon});`
-    +`node["highway"="give_way"](around:${r},${lat},${lon});`
-    +`);out body;>;out skel qt;`;
+  // Step 1: if not yet classified, run a small probe query first
+  if (urbanMode === null) {
+    setStatus('osm','warn','Probing area…');
+    const probeNodes = await runOverpassQuery(lat, lon, CFG.OSM_PROBE_RADIUS_M, 8);
+    if (probeNodes !== null) {
+      classifyDensity(lat, lon, probeNodes.length, CFG.OSM_PROBE_RADIUS_M);
+      dbg(`Probe: ${probeNodes.length} nodes in 1mi → ${urbanMode ? 'URBAN' : 'RURAL'}`);
+    }
+  }
+
+  // Step 2: full query at the right radius for this area type
+  const radius = urbanMode ? CFG.OSM_RADIUS_URBAN_M : CFG.OSM_RADIUS_RURAL_M;
+  const label  = urbanMode ? 'urban 2.5mi' : 'rural 5mi';
+  setStatus('osm','warn',`Fetching OSM (${label})…`);
+
+  const nodes = await runOverpassQuery(lat, lon, radius, 25);
+  if (nodes === null) {
+    setStatus('osm','err',`OSM fail (${osmNodes.length} in memory)`);
+    if (osmNodes.length > 0) evaluateMapAlerts();
+    return;
+  }
+
+  osmNodes     = nodes;
+  osmFetchedAt = Date.now();
+  setStatus('osm','ok',`OSM: ${osmNodes.length} (${urbanMode ? 'urban' : 'rural'})`);
+  evaluateMapAlerts();
+  updateStatusPanel();
+}
+
+function classifyDensity(lat, lon, nodeCount, radiusM) {
+  // If called without args, use current osmNodes
+  if (nodeCount === undefined) {
+    radiusM   = urbanMode ? CFG.OSM_RADIUS_URBAN_M : CFG.OSM_RADIUS_RURAL_M;
+    nodeCount = osmNodes.filter(n =>
+      haversineM(lat, lon, n.lat, n.lon) <= CFG.OSM_PROBE_RADIUS_M
+    ).length;
+    radiusM = CFG.OSM_PROBE_RADIUS_M;
+  }
+  const areaKm2   = Math.PI * Math.pow(radiusM / 1000, 2);
+  const density   = nodeCount / areaKm2;
+  const wasUrban  = urbanMode;
+  urbanMode       = density >= CFG.OSM_URBAN_DENSITY;
+  if (wasUrban !== urbanMode) {
+    dbg(`Mode changed: ${wasUrban===null?'unclassified':wasUrban?'urban':'rural'} → ${urbanMode?'urban':'rural'} (${density.toFixed(1)} nodes/km²)`);
+    // Reset lastQueryPos to force immediate re-query with new radius
+    if (wasUrban !== null) lastQueryPos = null;
+  }
+}
+
+async function runOverpassQuery(lat, lon, radiusM, timeout) {
+  const q = `[out:json][timeout:${timeout}];(`
+    + `node["highway"="stop"](around:${radiusM},${lat},${lon});`
+    + `node["highway"="traffic_signals"](around:${radiusM},${lat},${lon});`
+    + `node["highway"="give_way"](around:${radiusM},${lat},${lon});`
+    + `);out body;>;out skel qt;`;
   try {
     const res  = await fetch('https://overpass-api.de/api/interpreter', {
-      method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:'data='+encodeURIComponent(q),
+      method:  'POST',
+      headers: {'Content-Type':'application/x-www-form-urlencoded'},
+      body:    'data=' + encodeURIComponent(q),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-
-    // Build a map of nodeId → list of ways that contain it
-    // Each way gives us two adjacent node coords to compute road bearing
-    const nodeCoords = {};
-    const nodeWays   = {}; // nodeId → [{bearing}]
-
-    for (const el of json.elements) {
-      if (el.type === 'node') nodeCoords[el.id] = {lat:el.lat, lon:el.lon};
-    }
-    for (const el of json.elements) {
-      if (el.type !== 'way' || !el.nodes) continue;
-      // Compute the bearing of this way from its first two known coords
-      for (let i = 0; i < el.nodes.length - 1; i++) {
-        const a = nodeCoords[el.nodes[i]];
-        const b = nodeCoords[el.nodes[i+1]];
-        if (!a || !b) continue;
-        const brg = bearingDeg(a.lat, a.lon, b.lat, b.lon);
-        // Store both the forward and reverse bearing (road goes both ways)
-        for (const nid of el.nodes) {
-          if (!nodeWays[nid]) nodeWays[nid] = [];
-          nodeWays[nid].push(brg);
-          nodeWays[nid].push((brg + 180) % 360);
-        }
-        break; // one segment per way is enough
-      }
-    }
-
-    osmNodes = json.elements
-      .filter(el => el.type==='node' && el.tags?.highway)
-      .map(el => ({
-        id:       el.id,
-        lat:      el.lat,
-        lon:      el.lon,
-        type:     el.tags.highway==='traffic_signals' ? 'signal' : 'stop',
-        wayBearings: nodeWays[el.id] || null, // road directions this sign faces
-      }));
-
-    osmFetchedAt=Date.now();
-    setStatus('osm','ok',`OSM: ${osmNodes.length}`);
-    evaluateMapAlerts();
-    updateStatusPanel();
+    return parseOverpassNodes(json);
   } catch(e) {
-    setStatus('osm','err',`OSM fail (${osmNodes.length} nodes in memory)`);
-    console.warn('OSM fetch:', e);
-    if (osmNodes.length>0) evaluateMapAlerts();
+    console.warn('Overpass error:', e);
+    return null;
   }
+}
+
+function parseOverpassNodes(json) {
+  // Build node coord map and way-bearing map from response
+  const nodeCoords = {};
+  const nodeWays   = {};
+
+  for (const el of json.elements) {
+    if (el.type === 'node') nodeCoords[el.id] = {lat:el.lat, lon:el.lon};
+  }
+  for (const el of json.elements) {
+    if (el.type !== 'way' || !el.nodes) continue;
+    for (let i = 0; i < el.nodes.length - 1; i++) {
+      const a = nodeCoords[el.nodes[i]];
+      const b = nodeCoords[el.nodes[i+1]];
+      if (!a || !b) continue;
+      const brg = bearingDeg(a.lat, a.lon, b.lat, b.lon);
+      for (const nid of el.nodes) {
+        if (!nodeWays[nid]) nodeWays[nid] = [];
+        nodeWays[nid].push(brg);
+        nodeWays[nid].push((brg + 180) % 360);
+      }
+      break;
+    }
+  }
+
+  return json.elements
+    .filter(el => el.type === 'node' && el.tags?.highway)
+    .map(el => ({
+      id:          el.id,
+      lat:         el.lat,
+      lon:         el.lon,
+      type:        el.tags.highway === 'traffic_signals' ? 'signal' : 'stop',
+      wayBearings: nodeWays[el.id] || null,
+    }));
 }
 
 // ═══════════════════════════════════
@@ -971,44 +1016,56 @@ function evaluateMapAlerts() {
   if (!gpsPos||!mapEnabled) return;
   const {lat,lon,heading,speedMph}=gpsPos;
 
-  // Look-ahead compensation: at speed, GPS position is already stale by the time
-  // audio finishes playing. Compensate by shifting the effective position forward.
-  // TTS fires + speaks in roughly 2 seconds. At 30mph = 44fps → ~88ft look-ahead.
-  const speedFps   = speedMph * 1.467;       // mph → ft/sec
-  const lookAheadFt = speedFps * 2.0;        // 2 second look-ahead
+  // Look-ahead: shift effective position forward based on speed
+  const speedFps    = speedMph * 1.467;
+  const lookAheadFt = speedFps * 2.0;
   const lookAheadM  = lookAheadFt * CFG.M_PER_FT;
-
-  // Shift GPS position forward along heading for distance calculations
-  let effLat = lat, effLon = lon;
-  if (heading != null && lookAheadM > 5) {
-    const R   = 6371000;
-    const hdgR = heading * Math.PI / 180;
-    effLat = lat + (lookAheadM / R) * (180 / Math.PI) * Math.cos(hdgR);
-    effLon = lon + (lookAheadM / R) * (180 / Math.PI) * Math.sin(hdgR) / Math.cos(lat * Math.PI / 180);
+  let effLat=lat, effLon=lon;
+  if (heading!=null && lookAheadM>5) {
+    const R=6371000, hdgR=heading*Math.PI/180;
+    effLat = lat + (lookAheadM/R)*(180/Math.PI)*Math.cos(hdgR);
+    effLon = lon + (lookAheadM/R)*(180/Math.PI)*Math.sin(hdgR)/Math.cos(lat*Math.PI/180);
   }
 
   const hits=[];
   for (const node of osmNodes) {
-    // Use look-ahead position for distance
     const distFt = haversineM(effLat, effLon, node.lat, node.lon) / CFG.M_PER_FT;
     if (distFt > CFG.ALERT_MAX_FT || distFt < CFG.ALERT_MIN_FT) continue;
 
-    if (heading != null && speedMph >= CFG.HEADING_MIN_MPH) {
+    if (heading!=null && speedMph>=CFG.HEADING_MIN_MPH) {
+      // 1. Cone filter — sign must be geometrically ahead
       const bearing = bearingDeg(lat, lon, node.lat, node.lon);
       const diff    = angleDiff(bearing, heading);
       if (Math.abs(diff) > CFG.HEADING_CONE_DEG) continue;
 
-      // Way-bearing check: if we know which road(s) this sign is on,
-      // verify at least one of those roads is roughly aligned with our heading.
-      // This filters signs on cross streets that happen to be geometrically ahead.
+      // 2. Way-bearing filter — if road geometry available, road must align with heading
       if (node.wayBearings && node.wayBearings.length > 0) {
         const aligned = node.wayBearings.some(wb => Math.abs(angleDiff(wb, heading)) < 40);
         if (!aligned) continue;
       }
+
+      // 3. Approach filter — distance to this node must be DECREASING
+      // If it's increasing or flat, we're passing beside it, not approaching it.
+      // Allow a 30ft tolerance for GPS noise.
+      const prev = nodePrevDist[node.id];
+      if (prev !== undefined && distFt > prev + 30) {
+        // Distance is growing — we already passed it or it's on a cross street
+        dbg(`Skip node ${node.id}: dist growing ${Math.round(prev)}→${Math.round(distFt)}ft`);
+        continue;
+      }
     }
 
+    // Update tracked distance
+    nodePrevDist[node.id] = distFt;
     hits.push({type:node.type, distFt:Math.round(distFt), nodeId:node.id, source:'map'});
   }
+
+  // Clean up stale entries (nodes no longer in range)
+  const activeIds = new Set(osmNodes.map(n=>n.id));
+  for (const id of Object.keys(nodePrevDist)) {
+    if (!activeIds.has(Number(id))) delete nodePrevDist[id];
+  }
+
   hits.sort((a,b)=>a.distFt-b.distFt);
   lastMapHits=hits;
   mergeAndRender();
@@ -1306,36 +1363,9 @@ async function downloadBBox(bbox, label, onProgress) {
           body:'data='+encodeURIComponent(q),
         });
         if (res.ok) {
-          const json=await res.json();
-          // Build node coords and way bearings
-          const nc={};
-          const nw={};
-          for (const el of json.elements) {
-            if (el.type==='node') nc[el.id]={lat:el.lat,lon:el.lon};
-          }
-          for (const el of json.elements) {
-            if (el.type!=='way'||!el.nodes) continue;
-            for (let i=0;i<el.nodes.length-1;i++) {
-              const a=nc[el.nodes[i]], b=nc[el.nodes[i+1]];
-              if (!a||!b) continue;
-              const brg=bearingDeg(a.lat,a.lon,b.lat,b.lon);
-              for (const nid of el.nodes) {
-                if (!nw[nid]) nw[nid]=[];
-                nw[nid].push(brg);
-                nw[nid].push((brg+180)%360);
-              }
-              break;
-            }
-          }
-          for (const el of json.elements) {
-            if (el.type==='node'&&el.tags?.highway) {
-              all.set(el.id,{
-                id:el.id, lat:el.lat, lon:el.lon,
-                type:el.tags.highway==='traffic_signals'?'signal':'stop',
-                wayBearings: nw[el.id]||null,
-              });
-            }
-          }
+          const json = await res.json();
+          const parsed = parseOverpassNodes(json);
+          for (const n of parsed) all.set(n.id, n);
         } else {
           console.warn(`Chunk HTTP ${res.status}`);
         }
@@ -1457,7 +1487,8 @@ function updateStatusPanel() {
   document.getElementById('st-hsrc').textContent    = gpsPos?.headingSrc||'none';
   document.getElementById('st-nodes').textContent   = osmNodes.length + (osmNodes.length===0?' ⚠ no data':'');
   document.getElementById('st-age').textContent     = osmFetchedAt?`${Math.round((Date.now()-osmFetchedAt)/1000)}s ago`:'–';
-  document.getElementById('st-regions').textContent = cachedRegions.length;
+  document.getElementById('st-regions').textContent = cachedRegions.length
+    + (urbanMode===null?' (detecting…)' : urbanMode?' · urban 2.5mi' : ' · rural 5mi');
 }
 
 // ═══════════════════════════════════
