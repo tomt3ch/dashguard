@@ -231,6 +231,9 @@
     <button class="btn" id="btn-mute" onclick="toggleMute()">
       <span class="bi" id="mute-icon">🔊</span><span>Voice</span>
     </button>
+    <button class="btn" id="btn-speed" onclick="toggleSpeedWarning()">
+      <span class="bi">🚗</span><span id="lbl-speed">Speed</span>
+    </button>
     <button class="btn" onclick="togglePanel()">
       <span class="bi">📊</span><span>Info</span>
     </button>
@@ -265,6 +268,8 @@
       <div class="info-row"><span>Heading source</span><span class="info-val" id="st-hsrc">–</span></div>
       <div class="section-head" style="margin-top:10px;">Map data</div>
       <div class="info-row"><span>Nodes in memory</span><span class="info-val" id="st-nodes">0</span></div>
+      <div class="info-row"><span>Current road</span><span class="info-val" id="st-road">–</span></div>
+      <div class="info-row"><span>Speed limit</span><span class="info-val" id="st-limit">–</span></div>
       <div class="info-row"><span>Last OSM query</span><span class="info-val" id="st-age">–</span></div>
       <div class="info-row"><span>Cached regions</span><span class="info-val" id="st-regions">0</span></div>
       <div class="section-head" style="margin-top:10px;">Audio</div>
@@ -278,7 +283,7 @@
         <button class="action-btn" id="btn-log-copy" onclick="copyLog()" style="flex:1;opacity:0.4;" disabled>📋 Copy log</button>
       </div>
       <div style="margin-top:14px;font-size:10px;color:var(--muted2);text-align:center;line-height:1.6;">
-        DashGuard v28b · DB v4
+        DashGuard v32 · DB v4
       </div>
     </div>
 
@@ -412,10 +417,18 @@ const CFG = {
   HEADING_MIN_MPH:   5,
   BRACKETS_FT:       [500,400,300,200,100,50],  // even number brackets
   BRACKET_WIN_FT:    55,    // wide enough to catch each bracket once
+  BLINKER_BRACKETS:  [750, 250],  // caution/blinker — just two alerts
   SPEAK_COOLDOWN_MS: 10000, // 10s per bracket
   CAM_CONF_MIN:      0.40,  // confidence threshold when map corroborates
   CAM_CONF_CAM_ONLY: 0.65,  // higher threshold for camera-only (no map match) — kills false positives
   CAM_MIN_BOX_PX:    30,    // minimum box width/height in pixels — filters tiny edge-of-frame detections
+  // Overpass endpoints — rotated on failure for reliability
+  OVERPASS_ENDPOINTS: [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+    'https://lz4.overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+  ],
   STOP_W_CM:         76.2,
   LIGHT_H_CM:        114,
   FOCAL_PX:          700,
@@ -438,8 +451,32 @@ let headingUp=true; // default heading-up so map always shows travel direction a
 let selectedDeviceId=null, availableLenses=[];
 let gpsPos=null, lastQueryPos=null, gpsWatchId=null, compassHeading=null;
 let osmNodes=[], osmFetchedAt=null, urbanMode=null;
-let roads=[];         // [{id, segments:[{lat1,lon1,lat2,lon2}]}] — driveable road geometry
-let currentWayId=null; // way ID we're currently driving on
+let roads=[];         // [{id, name, speedLimit, segments}]
+let currentWayId=null;
+let currentSpeedLimit=null;  // mph, from OSM maxspeed tag of current road
+let speedWarningEnabled=true;
+let lastSpeedWarning=0;      // timestamp of last "slow down" alert
+
+// Parse OSM maxspeed tag into mph integer
+// Handles: "30", "30 mph", "50 km/h", "30 knots", "national", "urban", etc.
+function parseMaxspeed(tag) {
+  if (!tag) return null;
+  const t = tag.trim().toLowerCase();
+  // Named values (US defaults)
+  if (t === 'national' || t === 'urban')   return 25;
+  if (t === 'rural')                        return 55;
+  if (t === 'walk' || t === 'living_street') return 10;
+  // Numeric with unit
+  const kmh   = t.match(/^(\d+)\s*km\/?h/);
+  const mph   = t.match(/^(\d+)\s*mph/);
+  const knots = t.match(/^(\d+)\s*knots?/);
+  const bare  = t.match(/^(\d+)$/);
+  if (mph)   return parseInt(mph[1]);
+  if (kmh)   return Math.round(parseInt(kmh[1]) * 0.621371);
+  if (knots) return Math.round(parseInt(knots[1]) * 1.15078);
+  if (bare)  return parseInt(bare[1]); // OSM default is km/h for bare numbers
+  return null;
+}
 let db=null, cachedRegions=[], cachedRoadRegions=[];
 let lastMapHits=[], lastCamHits=[], activeAlerts=[], lastSpoken={};
 let nodePrevDist={}; // nodeId → last known distance in ft — used to detect approach vs passing
@@ -774,6 +811,9 @@ function processCamPredictions(preds) {
     hits.push({ type: isStop ? 'stop' : 'signal', distFt, score, source: 'cam' });
   }
   lastCamHits = hits;
+  // Reset camera-only alert count when no stop signs in frame
+  if (!hits.some(h=>h.type==='stop')) delete lastSpoken['cam-count-stop'];
+  if (!hits.some(h=>h.type==='signal')) delete lastSpoken['cam-count-signal'];
   mergeAndRender();
 }
 
@@ -923,8 +963,32 @@ function onGPSUpdate(pos) {
   }
   gpsPos={lat,lon,heading:resolvedHeading,headingSrc,speedMph,accuracy};
   setStatus('gps','ok',`GPS ±${Math.round(accuracy)}m`);
-  document.getElementById('speed-pill').textContent =
-    speedMph>1 ? `${Math.round(speedMph)} mph` : '– mph';
+
+  // Speed pill — show speed and limit, red if over
+  const spdMph   = Math.round(speedMph);
+  const pillEl   = document.getElementById('speed-pill');
+  const overLimit = speedWarningEnabled && currentSpeedLimit &&
+                    speedMph > currentSpeedLimit + 5 && speedMph > 1;
+  if (currentSpeedLimit && speedMph > 1) {
+    pillEl.textContent = `${spdMph} / ${currentSpeedLimit} mph`;
+    pillEl.style.color = overLimit ? '#FF5555' : '';
+    pillEl.style.fontWeight = overLimit ? '800' : '';
+  } else {
+    pillEl.textContent = speedMph > 1 ? `${spdMph} mph` : '– mph';
+    pillEl.style.color = '';
+    pillEl.style.fontWeight = '';
+  }
+
+  // Speed warning
+  if (overLimit && !muted) {
+    const now = Date.now();
+    if (now - lastSpeedWarning > 10000) {
+      lastSpeedWarning = now;
+      log('SPEED', `SLOW DOWN: ${spdMph}mph in ${currentSpeedLimit}mph zone`);
+      speak('Slow down.');
+    }
+  }
+
   updateCone(resolvedHeading);
   if (mapEnabled) {
     const refreshM = urbanMode ? CFG.OSM_REFRESH_URBAN_M : CFG.OSM_REFRESH_RURAL_M;
@@ -1060,30 +1124,38 @@ function classifyDensity(lat, lon, nodeCount, radiusM) {
   }
 }
 
+let overpassEndpointIdx = 0; // rotates on failure
+
 async function runOverpassQuery(lat, lon, radiusM, timeout) {
-  // Two-part query:
-  // 1. Get the sign nodes
-  // 2. Get the ways that contain those nodes WITH full geometry (out geom)
-  // We use 'wr' (way recurse) to get parent ways, then 'out geom' for their geometry
   const q = `[out:json][timeout:${timeout}];(`
     + `node["highway"="stop"](around:${radiusM},${lat},${lon});`
     + `node["highway"="traffic_signals"](around:${radiusM},${lat},${lon});`
     + `node["highway"="give_way"](around:${radiusM},${lat},${lon});`
-    + `);out body;`           // get sign nodes with all tags
-    + `way(bn);out geom qt;`; // get parent ways WITH inline geometry
-  try {
-    const res  = await fetch('https://overpass-api.de/api/interpreter', {
-      method:  'POST',
-      headers: {'Content-Type':'application/x-www-form-urlencoded'},
-      body:    'data=' + encodeURIComponent(q),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
-    return parseOverpassNodes(json);
-  } catch(e) {
-    console.warn('Overpass error:', e);
-    return null;
+    + `);out body;`
+    + `way(bn);out geom qt;`;
+  const endpoints = CFG.OVERPASS_ENDPOINTS;
+  for (let attempt = 0; attempt < endpoints.length; attempt++) {
+    const endpoint = endpoints[overpassEndpointIdx % endpoints.length];
+    try {
+      setStatus('osm','warn',`Fetching OSM (${endpoint.includes('private')?'private.coffee':endpoint.includes('kumi')?'kumi':endpoint.includes('lz4')?'lz4':'main'})…`);
+      const res = await fetch(endpoint, {
+        method:  'POST',
+        headers: {'Content-Type':'application/x-www-form-urlencoded'},
+        body:    'data=' + encodeURIComponent(q),
+        signal:  AbortSignal.timeout((timeout + 5) * 1000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      // Success — keep this endpoint for next time
+      log('OSM', `Endpoint success: ${endpoint}`);
+      return parseOverpassNodes(json);
+    } catch(e) {
+      console.warn(`Overpass ${endpoint} failed:`, e.message);
+      log('OSM', `Endpoint failed: ${endpoint} — ${e.message}`);
+      overpassEndpointIdx++; // rotate to next
+    }
   }
+  return null; // all endpoints failed
 }
 
 // ═══════════════════════════════════
@@ -1137,49 +1209,60 @@ async function fetchRoads(lat, lon) {
     }
   }
 
-  // Live Overpass fetch
+  // Live Overpass fetch with endpoint rotation
   const q = `[out:json][timeout:15];`
     + `way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$"]`
     + `(around:${ROAD_SNAP_RADIUS_M},${lat},${lon});`
     + `out geom qt;`;
-  try {
-    const res  = await fetch('https://overpass-api.de/api/interpreter', {
-      method:  'POST',
-      headers: {'Content-Type':'application/x-www-form-urlencoded'},
-      body:    'data=' + encodeURIComponent(q),
-    });
-    if (!res.ok) return;
-    const json = await res.json();
-    const newWays = (json.elements||[])
-      .filter(el => el.type==='way' && el.geometry)
-      .map(el => ({
-        id:       el.id,
-        name:     el.tags?.name || el.tags?.highway || 'road',
-        segments: el.geometry.slice(0,-1).map((pt,i)=>({
-          lat1:pt.lat, lon1:pt.lon,
-          lat2:el.geometry[i+1].lat, lon2:el.geometry[i+1].lon,
-        })),
-      }));
 
-    // Save tile to cache
-    if (db && newWays.length > 0) {
-      const tKey = roadTileKey(lat, lon);
-      const bbox = {
-        minlat:lat-ROAD_TILE_DEG, maxlat:lat+ROAD_TILE_DEG,
-        minlon:lon-ROAD_TILE_DEG, maxlon:lon+ROAD_TILE_DEG,
-      };
-      await saveRoadRegion(tKey, `Live tile (${lat.toFixed(3)},${lon.toFixed(3)})`, newWays, bbox);
-    } else {
-      // Merge into memory without saving
-      const existingIds = new Set(roads.map(r=>r.id));
-      for (const w of newWays) if (!existingIds.has(w.id)) roads.push(w);
+  const endpoints = CFG.OVERPASS_ENDPOINTS;
+  let json = null;
+  for (let attempt = 0; attempt < endpoints.length; attempt++) {
+    const endpoint = endpoints[overpassEndpointIdx % endpoints.length];
+    try {
+      const res = await fetch(endpoint, {
+        method:  'POST',
+        headers: {'Content-Type':'application/x-www-form-urlencoded'},
+        body:    'data=' + encodeURIComponent(q),
+        signal:  AbortSignal.timeout(20000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      json = await res.json();
+      break; // success
+    } catch(e) {
+      console.warn(`Roads fetch ${endpoint} failed:`, e.message);
+      overpassEndpointIdx++;
     }
-
-    snapToRoad(lat, lon);
-    dbg(`Roads: live fetch ${newWays.length} ways`);
-  } catch(e) {
-    console.warn('Road fetch:', e);
   }
+  if (!json) return;
+
+  const newWays = (json.elements||[])
+    .filter(el => el.type==='way' && el.geometry)
+    .map(el => ({
+      id:         el.id,
+      name:       el.tags?.name || el.tags?.highway || 'road',
+      speedLimit: parseMaxspeed(el.tags?.maxspeed),
+      segments:   el.geometry.slice(0,-1).map((pt,i)=>({
+        lat1:pt.lat, lon1:pt.lon,
+        lat2:el.geometry[i+1].lat, lon2:el.geometry[i+1].lon,
+      })),
+    }));
+
+  // Save tile to cache
+  if (db && newWays.length > 0) {
+    const tKey = roadTileKey(lat, lon);
+    const bbox = {
+      minlat:lat-ROAD_TILE_DEG, maxlat:lat+ROAD_TILE_DEG,
+      minlon:lon-ROAD_TILE_DEG, maxlon:lon+ROAD_TILE_DEG,
+    };
+    await saveRoadRegion(tKey, `Live tile (${lat.toFixed(3)},${lon.toFixed(3)})`, newWays, bbox);
+  } else {
+    const existingIds = new Set(roads.map(r=>r.id));
+    for (const w of newWays) if (!existingIds.has(w.id)) roads.push(w);
+  }
+
+  snapToRoad(lat, lon);
+  dbg(`Roads: live fetch ${newWays.length} ways`);
 }
 
 function snapToRoad(lat, lon) {
@@ -1203,10 +1286,13 @@ function snapToRoad(lat, lon) {
   if (bestDist <= SNAP_THRESHOLD_M && bestWayId !== currentWayId) {
     log('SNAP', `Road changed: ${currentWayId||'null'} → ${bestWayId} (${bestWayName}) dist=${Math.round(bestDist)}m`);
     currentWayId = bestWayId;
-    dbg(`Snapped to way ${bestWayId} (${bestWayName}) dist=${Math.round(bestDist)}m`);
+    const snappedWay = roads.find(r=>r.id===bestWayId);
+    currentSpeedLimit = snappedWay?.speedLimit || null;
+    dbg(`Snapped to way ${bestWayId} (${bestWayName}) limit=${currentSpeedLimit||'?'}mph dist=${Math.round(bestDist)}m`);
   } else if (bestDist > SNAP_THRESHOLD_M) {
     if (currentWayId) log('SNAP', `Off road — currentWayId cleared (nearest=${Math.round(bestDist)}m away)`);
     currentWayId = null;
+    currentSpeedLimit = null;
   }
 }
 
@@ -1282,7 +1368,15 @@ function parseOverpassNodes(json) {
       id:          el.id,
       lat:         el.lat,
       lon:         el.lon,
-      type:        el.tags.highway === 'traffic_signals' ? 'signal' : 'stop',
+      type: (() => {
+        const hw  = el.tags.highway;
+        const ts  = el.tags.traffic_signals || '';
+        if (hw === 'traffic_signals') {
+          if (ts === 'blinker' || ts === 'flashing_lights' || ts === 'warning') return 'blinker';
+          return 'signal';
+        }
+        return 'stop';
+      })(),
       wayId:       nodeWayId[el.id]      || null,
       wayBearings: nodeWayBrgs[el.id]    || null,
       wayFwdBrg:   nodeWayFwdBrg[el.id]  ?? null,
@@ -1480,9 +1574,11 @@ function renderAlertCards(alerts) {
              :'From map data';
     const el=document.createElement('div');
     el.className=`alert-card ${cc}`;
-    el.innerHTML=`<div class="alert-icon">${a.type==='stop'?'🛑':'🚦'}</div>
+    const typeLabel = a.type==='stop' ? 'Stop sign' : a.type==='blinker' ? 'Caution light' : 'Traffic signal';
+    const typeIcon  = a.type==='stop' ? '🛑' : a.type==='blinker' ? '🟡' : '🚦';
+    el.innerHTML=`<div class="alert-icon">${typeIcon}</div>
       <div class="alert-body">
-        <div class="alert-label">${a.type==='stop'?'Stop sign':'Traffic signal'}${bdg}</div>
+        <div class="alert-label">${typeLabel}${bdg}</div>
         <div class="alert-sub">${sub}</div>
       </div>
       <div class="alert-dist ${dc}">${Math.round(a.distFt)}<span style="font-size:11px;font-weight:400;color:var(--muted)"> ft</span></div>`;
@@ -1496,22 +1592,41 @@ function renderAlertCards(alerts) {
 function triggerVoiceAlerts(alerts) {
   if (speechSynthesis.speaking) return;
   for (const a of alerts) {
-    // Traffic lights: stop alerting under 50ft
+    // Hard distance floors
     if (a.type === 'signal' && a.distFt < 50) continue;
+    if (a.type === 'blinker' && a.distFt < 100) continue;
 
-    // Camera-only alerts: simple repeating phrase, no distance, no brackets
+    // Camera-only alerts: "stop sign ahead" max 2 times per detection session
     if (a.unmapped) {
-      const camKey = `cam-only-${a.type}`;
+      const camKey   = `cam-only-${a.type}`;
+      const camCount = `cam-count-${a.type}`;
       const now = Date.now();
       if (lastSpoken[camKey] && now - lastSpoken[camKey] < 8000) continue;
-      lastSpoken[camKey] = now;
+      if ((lastSpoken[camCount] || 0) >= 2) continue; // max 2 per session
+      lastSpoken[camKey]   = now;
+      lastSpoken[camCount] = (lastSpoken[camCount] || 0) + 1;
       const phrase = a.type === 'stop' ? 'Stop sign ahead.' : 'Traffic signal ahead.';
-      log('ALERT', `FIRED cam-only type=${a.type} score=${a.score?.toFixed(2)} → "${phrase}"`);
+      log('ALERT', `FIRED cam-only type=${a.type} count=${lastSpoken[camCount]} → "${phrase}"`);
       speak(phrase);
       break;
     }
 
-    // Map-based alerts: distance brackets
+    // Blinker nodes: only two specific brackets, different phrase
+    if (a.type === 'blinker') {
+      const bBracket = CFG.BLINKER_BRACKETS.find(b => Math.abs(a.distFt - b) <= CFG.BRACKET_WIN_FT);
+      if (bBracket === undefined) continue;
+      const bKey = `blinker-${a.nodeId}-${bBracket}`;
+      const now = Date.now();
+      if (lastSpoken[bKey] && now - lastSpoken[bKey] < CFG.SPEAK_COOLDOWN_MS) continue;
+      lastSpoken[bKey] = now;
+      const ft = roundToEven(Math.round(a.distFt));
+      const phrase = `Caution, intersection ahead, ${ft} feet.`;
+      log('ALERT', `FIRED blinker nodeId=${a.nodeId} bracket=${bBracket} → "${phrase}"`);
+      speak(phrase);
+      break;
+    }
+
+    // Map-based stop/signal alerts: distance brackets
     const bracket = nearestBracket(a.distFt);
     if (bracket === null) continue;
 
@@ -1521,7 +1636,7 @@ function triggerVoiceAlerts(alerts) {
 
     // "Do not roll through" — map source only, fires once per node
     if (a.type === 'stop' && a.distFt <= 100) {
-      if (a.source !== 'map' && !a.confirmedByCam) continue; // camera-only never fires this
+      if (a.source !== 'map' && !a.confirmedByCam) continue;
       const finalKey = `final-${a.nodeId}`;
       if (lastSpoken[finalKey]) continue;
       lastSpoken[finalKey] = now;
@@ -1545,12 +1660,9 @@ function roundToEven(ft) {
 
 function buildUtterance(a) {
   const ft = roundToEven(Math.round(a.distFt));
-  if (a.type === 'stop') {
-    if (ft <= 100) return 'Do not roll through the stop sign.';
-    return `Stop sign, ${ft} feet.`;
-  } else {
-    return `Traffic light, ${ft} feet.`;
-  }
+  if (a.type === 'stop')    return `Stop sign, ${ft} feet.`;
+  if (a.type === 'blinker') return `Caution, intersection ahead, ${ft} feet.`;
+  return `Traffic light, ${ft} feet.`;
 }
 // ═══════════════════════════════════
 //  VOICE — Web Speech API (device TTS, no internet)
@@ -1773,9 +1885,10 @@ async function downloadBBox(bbox, label, onProgress) {
           for (const el of (json.elements||[])) {
             if (el.type==='way'&&el.geometry) {
               allRoads.set(el.id, {
-                id:       el.id,
-                name:     el.tags?.name||el.tags?.highway||'road',
-                segments: el.geometry.slice(0,-1).map((pt,i)=>({
+                id:         el.id,
+                name:       el.tags?.name||el.tags?.highway||'road',
+                speedLimit: parseMaxspeed(el.tags?.maxspeed),
+                segments:   el.geometry.slice(0,-1).map((pt,i)=>({
                   lat1:pt.lat,lon1:pt.lon,
                   lat2:el.geometry[i+1].lat,lon2:el.geometry[i+1].lon,
                 })),
@@ -1941,6 +2054,19 @@ function toggleMute() {
   document.getElementById('btn-mute').classList.toggle('is-muted',muted);
   if (muted) speechSynthesis.cancel();
   setAudioStatus();
+}
+
+function toggleSpeedWarning() {
+  speedWarningEnabled = !speedWarningEnabled;
+  const btn = document.getElementById('btn-speed');
+  const lbl = document.getElementById('lbl-speed');
+  btn.classList.toggle('on-map', speedWarningEnabled);
+  lbl.textContent = speedWarningEnabled ? 'Speed on' : 'Speed off';
+  if (!speedWarningEnabled) {
+    const pillEl = document.getElementById('speed-pill');
+    pillEl.style.color = '';
+    pillEl.style.fontWeight = '';
+  }
 }
 
 function toggleMap() {
@@ -2144,15 +2270,12 @@ function drawLiveMap() {
 
   const currentRoad = roads.find(r=>r.id===currentWayId);
   const roadName    = currentRoad ? currentRoad.name : (roads.length ? 'no snap' : 'no roads');
-  const scaleLabel  = scaleFt >= 1000 ? `${(scaleFt/5280).toFixed(1)} mi` : `${Math.round(scaleFt)} ft`;
+  const limitStr    = currentSpeedLimit ? ` ${currentSpeedLimit}mph` : '';
   const modeLabel   = headingUp ? '▲' : '⬆N';
-
-  // Diagnostic: show wayId state for nodes
   const nodesWithWayId    = osmNodes.filter(n=>n.wayId).length;
   const nodesWithoutWayId = osmNodes.filter(n=>!n.wayId).length;
-
   document.getElementById('map-scale').textContent =
-    `${modeLabel} · ${roadName} (${currentWayId||'?'}) · `+
+    `${modeLabel} · ${roadName}${limitStr} (${currentWayId||'?'}) · `+
     `nodes: ${nodesWithWayId} w/wayId, ${nodesWithoutWayId} without`;
 
   // Auto-refresh when tab is open
@@ -2180,6 +2303,9 @@ function updateStatusPanel() {
   document.getElementById('st-acc').textContent     = gpsPos?`±${Math.round(gpsPos.accuracy)}m`:'–';
   document.getElementById('st-hsrc').textContent    = gpsPos?.headingSrc||'none';
   document.getElementById('st-nodes').textContent   = osmNodes.length + (osmNodes.length===0?' ⚠ no data':'');
+  const curRoad = roads.find(r=>r.id===currentWayId);
+  document.getElementById('st-road').textContent    = curRoad ? curRoad.name : (currentWayId ? `way ${currentWayId}` : '–');
+  document.getElementById('st-limit').textContent   = currentSpeedLimit ? `${currentSpeedLimit} mph ${speedWarningEnabled?'(warnings on)':'(warnings off)'}` : 'Unknown';
   document.getElementById('st-age').textContent     = osmFetchedAt?`${Math.round((Date.now()-osmFetchedAt)/1000)}s ago`:'–';
   renderCacheSummary();
 }
@@ -2211,7 +2337,7 @@ function startLog() {
   logActive  = true;
   logEntries = [];
   const startTime = new Date().toTimeString().slice(0,8);
-  logEntries.push(`=== DashGuard v28b DB v4 — Log started ${startTime} ===`);
+  logEntries.push(`=== DashGuard v32 DB v4 — Log started ${startTime} ===`);
   logEntries.push(`GPS: ${gpsPos ? `${gpsPos.lat.toFixed(5)},${gpsPos.lon.toFixed(5)} hdg=${Math.round(gpsPos.heading||0)}° spd=${Math.round(gpsPos.speedMph)}mph` : 'no lock'}`);
   logEntries.push(`Nodes: ${osmNodes.length} total, ${osmNodes.filter(n=>n.wayId).length} w/wayId, ${osmNodes.filter(n=>n.direction).length} w/direction`);
   logEntries.push(`Roads: ${roads.length} ways loaded, currentWayId=${currentWayId||'null'}`);
