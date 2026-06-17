@@ -209,6 +209,7 @@
       <div class="pill"><div class="dot" id="gps-dot"></div><span id="gps-txt">GPS…</span></div>
       <div class="pill"><div class="dot" id="osm-dot"></div><span id="osm-txt">OSM…</span></div>
       <div class="pill"><div class="dot" id="cam-dot"></div><span id="cam-txt">Cam…</span></div>
+      <div class="pill" id="rec-pill" style="display:none;background:rgba(210,40,40,0.85);color:#fff;font-weight:700;letter-spacing:0.5px;">⏺ REC</div>
       <div class="pill" id="speed-pill" onclick="tapSpeed()">– mph</div>
     </div>
     <div id="alert-wrap"></div>
@@ -270,8 +271,14 @@
       <div class="info-row"><span>Engine</span><span class="info-val">Device TTS (no internet)</span></div>
       <div class="info-row"><span>Status</span><span class="info-val" id="st-audio">–</span></div>
       <button class="action-btn" style="margin-top:10px;" onclick="testAudio()">🔊 Test voice alert</button>
+      <div class="section-head" style="margin-top:10px;">Diagnostics</div>
+      <div class="info-row"><span>Log status</span><span class="info-val" id="st-log">Off</span></div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="action-btn" id="btn-log-toggle" onclick="toggleLog()" style="flex:1;">⏺ Start log</button>
+        <button class="action-btn" id="btn-log-copy" onclick="copyLog()" style="flex:1;opacity:0.4;" disabled>📋 Copy log</button>
+      </div>
       <div style="margin-top:14px;font-size:10px;color:var(--muted2);text-align:center;line-height:1.6;">
-        DashGuard v27 · DB v4
+        DashGuard v28b · DB v4
       </div>
     </div>
 
@@ -1013,9 +1020,13 @@ async function fetchOSMNodes(lat, lon) {
   // Success
   osmNodes     = nodes;
   osmFetchedAt = Date.now();
-  lastQueryPos = {lat, lon}; // only set on success
+  lastQueryPos = {lat, lon};
   osmFetchAttempt = 0;
   clearTimeout(osmFetchRetryTimer);
+  const withWayId  = osmNodes.filter(n=>n.wayId).length;
+  const withDir    = osmNodes.filter(n=>n.direction).length;
+  const withFwdBrg = osmNodes.filter(n=>n.wayFwdBrg!==null).length;
+  log('OSM', `Fetched ${osmNodes.length} nodes — ${withWayId} w/wayId, ${withDir} w/direction, ${withFwdBrg} w/wayFwdBrg mode=${urbanMode?'urban':'rural'}`);
   setStatus('osm','ok',`OSM: ${osmNodes.length} (${urbanMode?'urban':'rural'})`);
   evaluateMapAlerts();
   updateStatusPanel();
@@ -1179,10 +1190,12 @@ function snapToRoad(lat, lon) {
 
   const SNAP_THRESHOLD_M = 50; // within 50m = on this road
   if (bestDist <= SNAP_THRESHOLD_M && bestWayId !== currentWayId) {
+    log('SNAP', `Road changed: ${currentWayId||'null'} → ${bestWayId} (${bestWayName}) dist=${Math.round(bestDist)}m`);
     currentWayId = bestWayId;
     dbg(`Snapped to way ${bestWayId} (${bestWayName}) dist=${Math.round(bestDist)}m`);
   } else if (bestDist > SNAP_THRESHOLD_M) {
-    currentWayId = null; // off-road or GPS noise
+    if (currentWayId) log('SNAP', `Off road — currentWayId cleared (nearest=${Math.round(bestDist)}m away)`);
+    currentWayId = null;
   }
 }
 
@@ -1336,21 +1349,27 @@ function evaluateMapAlerts() {
         }
 
         if (!signFacesUs) {
+          log('DIR', `Node ${node.id} SKIP dir=${dir} wayFwd=${node.wayFwdBrg!==null?Math.round(node.wayFwdBrg)+'°':'null'} heading=${Math.round(heading)}°`);
           dbg(`Skip node ${node.id}: direction=${dir} heading=${Math.round(heading)}° (wrong direction)`);
           continue;
+        } else {
+          log('DIR', `Node ${node.id} PASS dir=${dir} dist=${Math.round(distFt)}ft`);
         }
+      } else {
+        log('DIR', `Node ${node.id} no dir tag or no wayFwdBrg — skipping dir filter`);
       }
 
       // 1. Way ID filter — sign must be on the road we're driving
-      // If sign has a known wayId:
-      //   - If we know our road: suppress if they don't match
-      //   - If we DON'T know our road yet: suppress anyway — never alert for
-      //     a sign on a specific road when we can't confirm we're on that road
       if (node.wayId) {
         if (!currentWayId || node.wayId !== currentWayId) {
+          log('WAYID', `Node ${node.id} SKIP wayId=${node.wayId} current=${currentWayId||'null'} dist=${Math.round(distFt)}ft type=${node.type}`);
           dbg(`Skip node ${node.id}: wayId ${node.wayId} ≠ current ${currentWayId||'unknown'}`);
           continue;
+        } else {
+          log('WAYID', `Node ${node.id} PASS wayId=${node.wayId} matches current dist=${Math.round(distFt)}ft`);
         }
+      } else {
+        log('WAYID', `Node ${node.id} no wayId — cone filter only dist=${Math.round(distFt)}ft dir=${node.direction||'none'}`);
       }
 
       // 2. Cone filter
@@ -1482,6 +1501,7 @@ function triggerVoiceAlerts(alerts) {
     }
 
     lastSpoken[key] = now;
+    log('ALERT', `FIRED type=${a.type} dist=${Math.round(a.distFt)}ft nodeId=${a.nodeId||'cam'} source=${a.source} → "${buildUtterance(a)}"`);
     speak(buildUtterance(a));
     break;
   }
@@ -2143,8 +2163,85 @@ function updateStatusPanel() {
 }
 
 // ═══════════════════════════════════
-//  HEADING CONE
+//  DIAGNOSTIC LOGGER
 // ═══════════════════════════════════
+let logActive   = false;
+let logEntries  = [];
+let logTimer    = null;
+const LOG_MAX_MS = 15 * 60 * 1000; // auto-stop after 15 min
+
+function log(category, msg) {
+  if (!logActive) return;
+  const now  = new Date();
+  const ts   = now.toTimeString().slice(0,8);
+  logEntries.push(`[${ts}] [${category}] ${msg}`);
+}
+
+function toggleLog() {
+  if (logActive) {
+    stopLog();
+  } else {
+    startLog();
+  }
+}
+
+function startLog() {
+  logActive  = true;
+  logEntries = [];
+  const startTime = new Date().toTimeString().slice(0,8);
+  logEntries.push(`=== DashGuard v28b DB v4 — Log started ${startTime} ===`);
+  logEntries.push(`GPS: ${gpsPos ? `${gpsPos.lat.toFixed(5)},${gpsPos.lon.toFixed(5)} hdg=${Math.round(gpsPos.heading||0)}° spd=${Math.round(gpsPos.speedMph)}mph` : 'no lock'}`);
+  logEntries.push(`Nodes: ${osmNodes.length} total, ${osmNodes.filter(n=>n.wayId).length} w/wayId, ${osmNodes.filter(n=>n.direction).length} w/direction`);
+  logEntries.push(`Roads: ${roads.length} ways loaded, currentWayId=${currentWayId||'null'}`);
+  logEntries.push(`Mode: ${urbanMode===null?'unclassified':urbanMode?'urban':'rural'}`);
+  logEntries.push(`---`);
+
+  // Auto-stop after 15 min
+  logTimer = setTimeout(()=>stopLog(), LOG_MAX_MS);
+
+  document.getElementById('btn-log-toggle').textContent = '⏹ Stop log';
+  document.getElementById('btn-log-copy').disabled = true;
+  document.getElementById('btn-log-copy').style.opacity = '0.4';
+  document.getElementById('st-log').textContent = 'Recording…';
+  document.getElementById('rec-pill').style.display = '';
+  updateStatusPanel();
+}
+
+function stopLog() {
+  logActive = false;
+  clearTimeout(logTimer);
+  const endTime = new Date().toTimeString().slice(0,8);
+  logEntries.push(`---`);
+  logEntries.push(`=== Log ended ${endTime} — ${logEntries.length} entries ===`);
+
+  document.getElementById('btn-log-toggle').textContent = '⏺ Start log';
+  document.getElementById('btn-log-copy').disabled = false;
+  document.getElementById('btn-log-copy').style.opacity = '1';
+  document.getElementById('st-log').textContent = `${logEntries.length} lines ready`;
+  document.getElementById('rec-pill').style.display = 'none';
+}
+
+function copyLog() {
+  if (!logEntries.length) return;
+  const text = logEntries.join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    document.getElementById('st-log').textContent = '✓ Copied to clipboard!';
+    setTimeout(()=>{
+      document.getElementById('st-log').textContent = `${logEntries.length} lines ready`;
+    }, 2500);
+  }).catch(() => {
+    // Fallback for browsers without clipboard API
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.style.position = 'fixed';
+    el.style.opacity = '0';
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    document.getElementById('st-log').textContent = '✓ Copied!';
+  });
+}
 function toggleHeadingMode() {
   headingUp = !headingUp;
   // Update label: north-up shows N, heading-up shows arrow
