@@ -271,7 +271,7 @@
       <div class="info-row"><span>Status</span><span class="info-val" id="st-audio">–</span></div>
       <button class="action-btn" style="margin-top:10px;" onclick="testAudio()">🔊 Test voice alert</button>
       <div style="margin-top:14px;font-size:10px;color:var(--muted2);text-align:center;line-height:1.6;">
-        DashGuard v24 · DB v4
+        DashGuard v26b · DB v4
       </div>
     </div>
 
@@ -1340,10 +1340,16 @@ function evaluateMapAlerts() {
         }
       }
 
-      // 1. Way ID filter — sign's road must match our road
-      if (currentWayId && node.wayId && node.wayId !== currentWayId) {
-        dbg(`Skip node ${node.id}: wayId ${node.wayId} ≠ current ${currentWayId}`);
-        continue;
+      // 1. Way ID filter — sign must be on the road we're driving
+      // If sign has a known wayId:
+      //   - If we know our road: suppress if they don't match
+      //   - If we DON'T know our road yet: suppress anyway — never alert for
+      //     a sign on a specific road when we can't confirm we're on that road
+      if (node.wayId) {
+        if (!currentWayId || node.wayId !== currentWayId) {
+          dbg(`Skip node ${node.id}: wayId ${node.wayId} ≠ current ${currentWayId||'unknown'}`);
+          continue;
+        }
       }
 
       // 2. Cone filter
