@@ -270,6 +270,9 @@
       <div class="info-row"><span>Engine</span><span class="info-val">Device TTS (no internet)</span></div>
       <div class="info-row"><span>Status</span><span class="info-val" id="st-audio">–</span></div>
       <button class="action-btn" style="margin-top:10px;" onclick="testAudio()">🔊 Test voice alert</button>
+      <div style="margin-top:14px;font-size:10px;color:var(--muted2);text-align:center;line-height:1.6;">
+        DashGuard v24 · DB v4
+      </div>
     </div>
 
     <!-- CACHE -->
@@ -945,48 +948,74 @@ function onOrientation(e) {
 // ═══════════════════════════════════
 //  OSM FETCH — adaptive urban/rural radius
 // ═══════════════════════════════════
+let osmFetchRetryTimer = null;
+let osmFetchAttempt   = 0;
+
 async function fetchOSMNodes(lat, lon) {
-  lastQueryPos = {lat, lon};
+  // DON'T set lastQueryPos here — only set it on success
+  // so a failed fetch allows a retry on the next GPS update
 
   // If cached coverage exists, load all nodes from DB
   if (hasCachedCoverage(lat,lon) && db) {
     const allCached = await idbGetAll('nodes').catch(()=>[]);
     if (allCached.length > 0) {
       osmNodes = allCached; osmFetchedAt = Date.now();
-      // Classify from cached data
+      lastQueryPos = {lat, lon}; // success — mark position
       if (urbanMode === null) classifyDensity(lat, lon);
       setStatus('osm','ok',`OSM: ${osmNodes.length} (${urbanMode?'urban':'rural'} cache)`);
       evaluateMapAlerts();
       updateStatusPanel();
+      osmFetchAttempt = 0;
       return;
     }
   }
 
-  // Step 1: if not yet classified, run a small probe query first
+  // Step 1: classify urban/rural via probe if not yet known
   if (urbanMode === null) {
     setStatus('osm','warn','Probing area…');
-    const probeNodes = await runOverpassQuery(lat, lon, CFG.OSM_PROBE_RADIUS_M, 8);
+    const probeNodes = await runOverpassQuery(lat, lon, CFG.OSM_PROBE_RADIUS_M, 15);
     if (probeNodes !== null) {
       classifyDensity(lat, lon, probeNodes.length, CFG.OSM_PROBE_RADIUS_M);
-      dbg(`Probe: ${probeNodes.length} nodes in 1mi → ${urbanMode ? 'URBAN' : 'RURAL'}`);
+      dbg(`Probe: ${probeNodes.length} nodes in 1mi → ${urbanMode?'URBAN':'RURAL'}`);
+    } else {
+      // Probe failed — default to rural and try full query anyway
+      urbanMode = false;
+      dbg('Probe failed — defaulting to rural mode');
     }
   }
 
-  // Step 2: full query at the right radius for this area type
+  // Step 2: full query at the right radius
   const radius = urbanMode ? CFG.OSM_RADIUS_URBAN_M : CFG.OSM_RADIUS_RURAL_M;
   const label  = urbanMode ? 'urban 2.5mi' : 'rural 5mi';
   setStatus('osm','warn',`Fetching OSM (${label})…`);
 
-  const nodes = await runOverpassQuery(lat, lon, radius, 25);
+  const nodes = await runOverpassQuery(lat, lon, radius, 30);
+
   if (nodes === null) {
-    setStatus('osm','err',`OSM fail (${osmNodes.length} in memory)`);
-    if (osmNodes.length > 0) evaluateMapAlerts();
+    osmFetchAttempt++;
+    // Exponential backoff: 15s, 30s, 60s, 120s max
+    const retryMs = Math.min(15000 * Math.pow(2, osmFetchAttempt - 1), 120000);
+    setStatus('osm','err',`OSM fail — retry in ${Math.round(retryMs/1000)}s`);
+    if (osmNodes.length > 0) evaluateMapAlerts(); // use stale data if any
+
+    // Schedule retry — don't rely on GPS movement
+    clearTimeout(osmFetchRetryTimer);
+    osmFetchRetryTimer = setTimeout(() => {
+      if (gpsPos && mapEnabled) {
+        dbg(`OSM retry attempt ${osmFetchAttempt+1}`);
+        fetchOSMNodes(gpsPos.lat, gpsPos.lon);
+      }
+    }, retryMs);
     return;
   }
 
+  // Success
   osmNodes     = nodes;
   osmFetchedAt = Date.now();
-  setStatus('osm','ok',`OSM: ${osmNodes.length} (${urbanMode ? 'urban' : 'rural'})`);
+  lastQueryPos = {lat, lon}; // only set on success
+  osmFetchAttempt = 0;
+  clearTimeout(osmFetchRetryTimer);
+  setStatus('osm','ok',`OSM: ${osmNodes.length} (${urbanMode?'urban':'rural'})`);
   evaluateMapAlerts();
   updateStatusPanel();
 }
@@ -1747,6 +1776,7 @@ async function clearAllCache() {
   cachedRegions=[]; cachedRoadRegions=[]; osmNodes=[]; roads=[];
   currentWayId=null; lastRoadQueryPos=null;
   urbanMode=null; lastQueryPos=null;
+  osmFetchAttempt=0; clearTimeout(osmFetchRetryTimer);
   renderRegionList();
   renderCacheSummary();
   updateStatusPanel();
@@ -1784,8 +1814,13 @@ function toggleMap() {
   mapEnabled=!mapEnabled;
   btnMap.classList.toggle('on-map',mapEnabled);
   lblMap.textContent=mapEnabled?'Map on':'Map off';
-  if (!mapEnabled) { setStatus('osm','','Map off'); lastMapHits=[]; mergeAndRender(); }
-  else if (gpsPos) fetchOSMNodes(gpsPos.lat,gpsPos.lon);
+  if (!mapEnabled) {
+    setStatus('osm','','Map off'); lastMapHits=[]; mergeAndRender();
+    clearTimeout(osmFetchRetryTimer); osmFetchAttempt=0;
+  } else if (gpsPos) {
+    lastQueryPos=null; // force immediate re-fetch
+    fetchOSMNodes(gpsPos.lat,gpsPos.lon);
+  }
 }
 
 function togglePanel() {
