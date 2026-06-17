@@ -247,6 +247,7 @@
     <button class="ptab active" onclick="switchTab('status')">Status</button>
     <button class="ptab" onclick="switchTab('cache')">Map cache</button>
     <button class="ptab" onclick="switchTab('camera')">Camera</button>
+    <button class="ptab" onclick="switchTab('map')">Live map</button>
   </div>
   <div class="panel-body">
 
@@ -298,12 +299,20 @@
       </div>
 
       <div class="cache-sect">
-        <h3>Downloaded regions</h3>
+        <h3>Downloaded regions — Signs</h3>
         <div id="region-list" class="region-list">
-          <div style="font-size:12px;color:var(--muted)">No regions cached yet.</div>
+          <div style="font-size:12px;color:var(--muted)">No sign data cached yet.</div>
         </div>
-        <button class="action-btn danger" style="margin-top:12px;font-size:12px;" onclick="clearAllCache()">🗑 Clear all map data</button>
       </div>
+
+      <div class="cache-sect">
+        <h3>Downloaded regions — Roads</h3>
+        <div id="road-region-list" class="region-list">
+          <div style="font-size:12px;color:var(--muted)">No road data cached yet.</div>
+        </div>
+      </div>
+
+      <button class="action-btn danger" style="margin-top:4px;font-size:12px;" onclick="clearAllCache()">🗑 Clear all map data</button>
     </div>
 
     <!-- CAMERA -->
@@ -337,6 +346,20 @@
         </div>
         <div class="cam-note" style="margin-top:8px;">Auto-set when you pick a lens. Adjust if distance readouts feel off.</div>
       </div>
+    </div>
+
+    <!-- LIVE MAP TAB -->
+    <div class="tab-pane" id="tab-map">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.8;">
+        <span style="color:#378ADD">⬤</span> You &nbsp;
+        <span style="color:#4CAF50">⬤</span> Will alert &nbsp;
+        <span style="color:#EF9F27">⬤</span> Watching &nbsp;
+        <span style="color:#E24B4A">⬤</span> Suppressed &nbsp;
+        <span style="color:rgba(255,255,255,0.3)">⬤</span> Out of cone
+      </div>
+      <canvas id="live-map" width="320" height="320"
+        style="width:100%;border-radius:10px;background:#111;display:block;"></canvas>
+      <div id="map-scale" style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center;">Scale: –</div>
     </div>
 
   </div>
@@ -387,7 +410,7 @@ const CFG = {
   M_PER_FT:          0.3048,
   FUSION_MATCH_FT:   100,
   DB_NAME:           'dashguard',
-  DB_VER:            3,
+  DB_VER:            4,   // bumped: adds roads + road-regions stores
   CHUNK_DEG:         0.4,
 };
 
@@ -401,8 +424,10 @@ let tapCount=0, tapTimer=null, debugOpen=false;
 let headingUp=false; // false=north-up, true=heading-up
 let selectedDeviceId=null, availableLenses=[];
 let gpsPos=null, lastQueryPos=null, gpsWatchId=null, compassHeading=null;
-let osmNodes=[], osmFetchedAt=null, urbanMode=null; // null=unclassified, true=urban, false=rural
-let db=null, cachedRegions=[];
+let osmNodes=[], osmFetchedAt=null, urbanMode=null;
+let roads=[];         // [{id, segments:[{lat1,lon1,lat2,lon2}]}] — driveable road geometry
+let currentWayId=null; // way ID we're currently driving on
+let db=null, cachedRegions=[], cachedRoadRegions=[];
 let lastMapHits=[], lastCamHits=[], activeAlerts=[], lastSpoken={};
 let nodePrevDist={}; // nodeId → last known distance in ft — used to detect approach vs passing
 
@@ -432,8 +457,10 @@ function openDB() {
     const req = indexedDB.open(CFG.DB_NAME, CFG.DB_VER);
     req.onupgradeneeded = e => {
       const d = e.target.result;
-      if (!d.objectStoreNames.contains('nodes'))   d.createObjectStore('nodes',   {keyPath:'id'});
-      if (!d.objectStoreNames.contains('regions')) d.createObjectStore('regions', {keyPath:'key'});
+      if (!d.objectStoreNames.contains('nodes'))        d.createObjectStore('nodes',        {keyPath:'id'});
+      if (!d.objectStoreNames.contains('regions'))      d.createObjectStore('regions',      {keyPath:'key'});
+      if (!d.objectStoreNames.contains('roads'))        d.createObjectStore('roads',        {keyPath:'id'});
+      if (!d.objectStoreNames.contains('road-regions')) d.createObjectStore('road-regions', {keyPath:'key'});
     };
     req.onsuccess = e => res(e.target.result);
     req.onerror   = () => rej(req.error);
@@ -476,16 +503,24 @@ function idbClear(store) {
 
 async function loadCachedRegions() {
   if (!db) return;
-  cachedRegions = await idbGetAll('regions').catch(()=>[]);
-  // Pre-load all cached nodes into memory immediately so they're ready when GPS arrives
-  if (cachedRegions.length>0) {
+  cachedRegions     = await idbGetAll('regions').catch(()=>[]);
+  cachedRoadRegions = await idbGetAll('road-regions').catch(()=>[]);
+
+  // Pre-load sign nodes
+  if (cachedRegions.length > 0) {
     const all = await idbGetAll('nodes').catch(()=>[]);
-    if (all.length>0) {
+    if (all.length > 0) {
       osmNodes = all;
       osmFetchedAt = Date.now();
       setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
     }
   }
+  // Pre-load road geometry
+  if (cachedRoadRegions.length > 0) {
+    const allRoads = await idbGetAll('roads').catch(()=>[]);
+    if (allRoads.length > 0) roads = allRoads;
+  }
+
   renderRegionList();
   renderCacheSummary();
   updateStatusPanel();
@@ -507,6 +542,21 @@ async function saveRegion(key, label, nodes, bbox) {
   renderRegionList();
   renderCacheSummary();
   updateStatusPanel();
+}
+
+async function saveRoadRegion(key, label, roadWays, bbox) {
+  if (!db || !roadWays.length) return;
+  await idbPutAll('roads', roadWays);
+  const sizeKB = Math.round(JSON.stringify(roadWays).length / 1024);
+  const rec = {key, label, wayCount:roadWays.length, sizeKB, ts:Date.now(), bbox};
+  await idbPutAll('road-regions', [rec]);
+  cachedRoadRegions = cachedRoadRegions.filter(r => r.key !== key);
+  cachedRoadRegions.push(rec);
+  // Merge into in-memory roads array
+  const existingIds = new Set(roads.map(r=>r.id));
+  for (const w of roadWays) if (!existingIds.has(w.id)) roads.push(w);
+  renderRegionList();
+  renderCacheSummary();
 }
 
 function hasCachedCoverage(lat, lon) {
@@ -863,6 +913,12 @@ function onGPSUpdate(pos) {
       haversineM(lat,lon,lastQueryPos.lat,lastQueryPos.lon) > refreshM;
     if (needsQuery) fetchOSMNodes(lat,lon);
     else evaluateMapAlerts();
+
+    // Road network for snap-to-road (separate smaller query)
+    const needsRoads = !lastRoadQueryPos ||
+      haversineM(lat,lon,lastRoadQueryPos.lat,lastRoadQueryPos.lon) > ROAD_SNAP_REFRESH_M;
+    if (needsRoads) fetchRoads(lat, lon);
+    else snapToRoad(lat, lon);
   }
   updateStatusPanel();
 }
@@ -976,10 +1032,151 @@ async function runOverpassQuery(lat, lon, radiusM, timeout) {
   }
 }
 
+// ═══════════════════════════════════
+//  ROAD NETWORK FETCH + SNAP-TO-ROAD
+// ═══════════════════════════════════
+const ROAD_SNAP_RADIUS_M  = 1609;
+const ROAD_SNAP_REFRESH_M = 400;
+const ROAD_TILE_DEG       = 0.02;  // ~1.3mi tile grid
+const ROAD_TILE_MAX_AGE   = 7 * 24 * 3600 * 1000; // 7 days
+let lastRoadQueryPos = null;
+
+function roadTileKey(lat, lon) {
+  const tlat = (Math.floor(lat / ROAD_TILE_DEG) * ROAD_TILE_DEG).toFixed(3);
+  const tlon = (Math.floor(lon / ROAD_TILE_DEG) * ROAD_TILE_DEG).toFixed(3);
+  return `road-tile:${tlat},${tlon}`;
+}
+
+async function fetchRoads(lat, lon) {
+  lastRoadQueryPos = {lat, lon};
+
+  // Check if any cached road region covers this position
+  const regionCovered = cachedRoadRegions.some(r =>
+    r.bbox && lat>=r.bbox.minlat && lat<=r.bbox.maxlat &&
+              lon>=r.bbox.minlon && lon<=r.bbox.maxlon
+  );
+  if (regionCovered && roads.length > 0) {
+    // Already loaded from regional cache at startup — just snap
+    snapToRoad(lat, lon);
+    return;
+  }
+
+  // Check live tile cache in IndexedDB
+  if (db) {
+    const tileKey = roadTileKey(lat, lon);
+    const cached  = await idbGetAll('road-regions').catch(()=>[]);
+    const tile    = cached.find(r => r.key === tileKey);
+    if (tile && (Date.now() - tile.ts) < ROAD_TILE_MAX_AGE) {
+      // Tile is fresh — load roads from DB that are near this position
+      const allRoads = await idbGetAll('roads').catch(()=>[]);
+      const nearby   = allRoads.filter(w =>
+        w.segments.some(s => haversineM(lat,lon,s.lat1,s.lon1) <= ROAD_SNAP_RADIUS_M * 1.2)
+      );
+      if (nearby.length > 0) {
+        // Merge any new roads
+        const existingIds = new Set(roads.map(r=>r.id));
+        for (const w of nearby) if (!existingIds.has(w.id)) roads.push(w);
+        snapToRoad(lat, lon);
+        dbg(`Roads: tile cache hit (${nearby.length} ways)`);
+        return;
+      }
+    }
+  }
+
+  // Live Overpass fetch
+  const q = `[out:json][timeout:15];`
+    + `way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$"]`
+    + `(around:${ROAD_SNAP_RADIUS_M},${lat},${lon});`
+    + `out geom qt;`;
+  try {
+    const res  = await fetch('https://overpass-api.de/api/interpreter', {
+      method:  'POST',
+      headers: {'Content-Type':'application/x-www-form-urlencoded'},
+      body:    'data=' + encodeURIComponent(q),
+    });
+    if (!res.ok) return;
+    const json = await res.json();
+    const newWays = (json.elements||[])
+      .filter(el => el.type==='way' && el.geometry)
+      .map(el => ({
+        id:       el.id,
+        name:     el.tags?.name || el.tags?.highway || 'road',
+        segments: el.geometry.slice(0,-1).map((pt,i)=>({
+          lat1:pt.lat, lon1:pt.lon,
+          lat2:el.geometry[i+1].lat, lon2:el.geometry[i+1].lon,
+        })),
+      }));
+
+    // Save tile to cache
+    if (db && newWays.length > 0) {
+      const tKey = roadTileKey(lat, lon);
+      const bbox = {
+        minlat:lat-ROAD_TILE_DEG, maxlat:lat+ROAD_TILE_DEG,
+        minlon:lon-ROAD_TILE_DEG, maxlon:lon+ROAD_TILE_DEG,
+      };
+      await saveRoadRegion(tKey, `Live tile (${lat.toFixed(3)},${lon.toFixed(3)})`, newWays, bbox);
+    } else {
+      // Merge into memory without saving
+      const existingIds = new Set(roads.map(r=>r.id));
+      for (const w of newWays) if (!existingIds.has(w.id)) roads.push(w);
+    }
+
+    snapToRoad(lat, lon);
+    dbg(`Roads: live fetch ${newWays.length} ways`);
+  } catch(e) {
+    console.warn('Road fetch:', e);
+  }
+}
+
+function snapToRoad(lat, lon) {
+  if (!roads.length) return;
+  let bestWayId   = null;
+  let bestWayName = null;
+  let bestDist    = Infinity;
+
+  for (const way of roads) {
+    for (const seg of way.segments) {
+      const d = distToSegmentM(lat, lon, seg.lat1, seg.lon1, seg.lat2, seg.lon2);
+      if (d < bestDist) {
+        bestDist    = d;
+        bestWayId   = way.id;
+        bestWayName = way.name;
+      }
+    }
+  }
+
+  const SNAP_THRESHOLD_M = 50; // within 50m = on this road
+  if (bestDist <= SNAP_THRESHOLD_M && bestWayId !== currentWayId) {
+    currentWayId = bestWayId;
+    dbg(`Snapped to way ${bestWayId} (${bestWayName}) dist=${Math.round(bestDist)}m`);
+  } else if (bestDist > SNAP_THRESHOLD_M) {
+    currentWayId = null; // off-road or GPS noise
+  }
+}
+
+// Point-to-line-segment distance in metres
+function distToSegmentM(plat, plon, lat1, lon1, lat2, lon2) {
+  // Project point onto segment, clamp to [0,1], return distance to closest point
+  const R = 6371000;
+  // Convert to flat-earth approximation (valid for short segments)
+  const cos = Math.cos((plat + lat1) / 2 * Math.PI / 180);
+  const ax  = lon1 * cos, ay = lat1;
+  const bx  = lon2 * cos, by = lat2;
+  const px  = plon * cos, py = plat;
+  const dx  = bx - ax,    dy = by - ay;
+  const lenSq = dx*dx + dy*dy;
+  let t = lenSq > 0 ? ((px-ax)*dx + (py-ay)*dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  const qx = ax + t*dx, qy = ay + t*dy;
+  const ex = (px - qx) * cos * R * Math.PI / 180;
+  const ey = (py - qy)         * R * Math.PI / 180;
+  return Math.sqrt(ex*ex + ey*ey);
+}
+
 function parseOverpassNodes(json) {
-  // Build node coord map and way-bearing map from response
-  const nodeCoords = {};
-  const nodeWays   = {};
+  const nodeCoords  = {};
+  const nodeWayId   = {};  // nodeId → first way that contains it (the road it controls)
+  const nodeWayBrgs = {};  // nodeId → [bearings] for heading filter fallback
 
   for (const el of json.elements) {
     if (el.type === 'node') nodeCoords[el.id] = {lat:el.lat, lon:el.lon};
@@ -992,9 +1189,11 @@ function parseOverpassNodes(json) {
       if (!a || !b) continue;
       const brg = bearingDeg(a.lat, a.lon, b.lat, b.lon);
       for (const nid of el.nodes) {
-        if (!nodeWays[nid]) nodeWays[nid] = [];
-        nodeWays[nid].push(brg);
-        nodeWays[nid].push((brg + 180) % 360);
+        // wayId: first way found wins — stop signs belong to exactly one road
+        if (!nodeWayId[nid])   nodeWayId[nid] = el.id;
+        if (!nodeWayBrgs[nid]) nodeWayBrgs[nid] = [];
+        nodeWayBrgs[nid].push(brg);
+        nodeWayBrgs[nid].push((brg + 180) % 360);
       }
       break;
     }
@@ -1007,7 +1206,8 @@ function parseOverpassNodes(json) {
       lat:         el.lat,
       lon:         el.lon,
       type:        el.tags.highway === 'traffic_signals' ? 'signal' : 'stop',
-      wayBearings: nodeWays[el.id] || null,
+      wayId:       nodeWayId[el.id]   || null,   // road this sign controls
+      wayBearings: nodeWayBrgs[el.id] || null,   // fallback for heading filter
     }));
 }
 
@@ -1032,27 +1232,46 @@ function evaluateMapAlerts() {
   const hits=[];
   for (const node of osmNodes) {
     const distFt = haversineM(effLat, effLon, node.lat, node.lon) / CFG.M_PER_FT;
-    if (distFt > CFG.ALERT_MAX_FT || distFt < CFG.ALERT_MIN_FT) continue;
+
+    // Hard distance floor per type — no point alerting when you're on top of it
+    const minFt = node.type==='signal' ? 50 : 30;
+    if (distFt > CFG.ALERT_MAX_FT || distFt < minFt) continue;
 
     if (heading!=null && speedMph>=CFG.HEADING_MIN_MPH) {
-      // 1. Cone filter — sign must be geometrically ahead
+      // 0. Way ID filter — PRIMARY: sign must be on the road we're driving
+      //    If we have a current way ID AND the sign has a way ID,
+      //    and they don't match → skip. This catches cross-street signs correctly.
+      if (currentWayId && node.wayId && node.wayId !== currentWayId) {
+        dbg(`Skip node ${node.id}: wayId ${node.wayId} ≠ current ${currentWayId}`);
+        continue;
+      }
+
+      // 1. Cone filter (fallback when way IDs not available)
       const bearing = bearingDeg(lat, lon, node.lat, node.lon);
       const diff    = angleDiff(bearing, heading);
       if (Math.abs(diff) > CFG.HEADING_CONE_DEG) continue;
 
-      // 2. Way-bearing filter — if road geometry available, road must align with heading
+      // 2. Way-bearing filter
       if (node.wayBearings && node.wayBearings.length > 0) {
         const aligned = node.wayBearings.some(wb => Math.abs(angleDiff(wb, heading)) < 40);
         if (!aligned) continue;
       }
 
-      // 3. Approach filter — distance to this node must be DECREASING
-      // If it's increasing or flat, we're passing beside it, not approaching it.
-      // Allow a 30ft tolerance for GPS noise.
+      // 3. Approach filter — require TWO consecutive GPS updates showing
+      //    decreasing distance before alerting. This prevents the first-sight
+      //    false positive where a cross-street sign passes through because
+      //    there's no prior distance to compare against.
       const prev = nodePrevDist[node.id];
-      if (prev !== undefined && distFt > prev + 30) {
-        // Distance is growing — we already passed it or it's on a cross street
-        dbg(`Skip node ${node.id}: dist growing ${Math.round(prev)}→${Math.round(distFt)}ft`);
+      if (prev === undefined) {
+        // First time we see this node — seed distance, don't alert yet
+        nodePrevDist[node.id] = distFt;
+        dbg(`Node ${node.id} first seen at ${Math.round(distFt)}ft — seeding, no alert`);
+        continue;
+      }
+      if (distFt > prev + 30) {
+        // Distance growing — passing beside it or already past
+        nodePrevDist[node.id] = distFt;
+        dbg(`Skip node ${node.id}: growing ${Math.round(prev)}→${Math.round(distFt)}ft`);
         continue;
       }
     }
@@ -1062,7 +1281,7 @@ function evaluateMapAlerts() {
     hits.push({type:node.type, distFt:Math.round(distFt), nodeId:node.id, source:'map'});
   }
 
-  // Clean up stale entries (nodes no longer in range)
+  // Clean up stale entries
   const activeIds = new Set(osmNodes.map(n=>n.id));
   for (const id of Object.keys(nodePrevDist)) {
     if (!activeIds.has(Number(id))) delete nodePrevDist[id];
@@ -1134,11 +1353,23 @@ function renderAlertCards(alerts) {
 function triggerVoiceAlerts(alerts) {
   if (speechSynthesis.speaking) return;
   for (const a of alerts) {
+    // Traffic lights: stop alerting under 50ft
+    if (a.type === 'signal' && a.distFt < 50) continue;
+
     const bracket = nearestBracket(a.distFt);
     if (bracket === null) continue;
+
     const key = `${a.type}-${a.nodeId||'cam'}-${bracket}`;
     const now = Date.now();
     if (lastSpoken[key] && now - lastSpoken[key] < CFG.SPEAK_COOLDOWN_MS) continue;
+
+    // "Do not roll through" — only fire once per node ever, not once per bracket
+    const finalKey = `final-${a.nodeId||'cam'}`;
+    if (a.type === 'stop' && a.distFt <= 100) {
+      if (lastSpoken[finalKey]) continue; // already said it for this sign
+      lastSpoken[finalKey] = now;
+    }
+
     lastSpoken[key] = now;
     speak(buildUtterance(a));
     break;
@@ -1146,7 +1377,6 @@ function triggerVoiceAlerts(alerts) {
 }
 
 function roundToEven(ft) {
-  // Above 200ft: round to nearest 100. Below: round to nearest 50.
   if (ft >= 200) return Math.round(ft / 100) * 100;
   return Math.round(ft / 50) * 50;
 }
@@ -1157,7 +1387,6 @@ function buildUtterance(a) {
     if (ft <= 100) return 'Do not roll through the stop sign.';
     return `Stop sign, ${ft} feet.`;
   } else {
-    // traffic signal — never say "stop", just warn
     return `Traffic light, ${ft} feet.`;
   }
 }
@@ -1259,10 +1488,10 @@ async function downloadRegion() {
     const [minlat,maxlat,minlon,maxlon]=best.boundingbox.map(Number);
     const bbox={minlat,maxlat,minlon,maxlon};
     const dispName=best.display_name.split(',')[0];
-    setProgress(`Found: ${dispName}. Downloading signs…`);
+    setProgress(`Found: ${dispName}. Downloading signs + roads…`);
     setProgBar(8);
 
-    const nodes=await downloadBBox(bbox, label, p=>setProgBar(8+p*90));
+    const {nodes, roadWays}=await downloadBBox(bbox, label, p=>setProgBar(8+p*88));
 
     if (nodes.length===0) {
       setProgress('Download returned 0 nodes. Overpass may be busy — try again in a moment.');
@@ -1272,16 +1501,17 @@ async function downloadRegion() {
 
     const key=`region:${label.toLowerCase().replace(/[\s,]+/g,'-')}`;
     await saveRegion(key, label, nodes, bbox);
+    await saveRoadRegion(key, label, roadWays, bbox);
 
-    // Load ALL cached nodes into memory and reclassify
+    // Load ALL cached data into memory and reclassify
     osmNodes = await idbGetAll('nodes').catch(()=>[]);
     osmFetchedAt = Date.now();
     if (gpsPos) classifyDensity(gpsPos.lat, gpsPos.lon);
     setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
-    if (gpsPos) evaluateMapAlerts();
+    if (gpsPos) { evaluateMapAlerts(); snapToRoad(gpsPos.lat, gpsPos.lon); }
 
     setProgBar(100);
-    setProgress(`✓ Saved ${nodes.length.toLocaleString()} signs for ${label}`);
+    setProgress(`✓ ${nodes.length.toLocaleString()} signs · ${roadWays.length.toLocaleString()} road ways saved for ${label}`);
     document.getElementById('inp-state').value='';
     document.getElementById('inp-county').value='';
   } catch(e) {
@@ -1315,21 +1545,21 @@ async function downloadRadius(km) {
   setProgBar(5);
 
   try {
-    const nodes=await downloadBBox(bbox, label, p=>setProgBar(5+p*93));
+    const {nodes, roadWays}=await downloadBBox(bbox, label, p=>setProgBar(5+p*93));
     if (nodes.length===0) {
       setProgress('0 nodes returned — Overpass may be busy. Try again shortly.');
       return;
     }
     await saveRegion(key, label, nodes, bbox);
-    // Load ALL cached nodes into memory (not just a radius slice)
+    await saveRoadRegion(key, label, roadWays, bbox);
     osmNodes = await idbGetAll('nodes').catch(()=>[]);
     osmFetchedAt = Date.now();
-    // Classify density from new data
     classifyDensity(lat, lon);
     setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
     evaluateMapAlerts();
+    if (gpsPos) snapToRoad(gpsPos.lat, gpsPos.lon);
     setProgBar(100);
-    setProgress(`✓ ${nodes.length.toLocaleString()} signs saved for ${label}`);
+    setProgress(`✓ ${nodes.length.toLocaleString()} signs · ${roadWays.length.toLocaleString()} road ways saved`);
     renderCacheSummary();
   } catch(e) {
     setProgress(`Error: ${e.message}`);
@@ -1348,64 +1578,120 @@ async function downloadBBox(bbox, label, onProgress) {
 
   const total=latSteps.length*lonSteps.length;
   let done=0;
-  const all=new Map();
+  const allNodes=new Map();
+  const allRoads=new Map();
 
   for (const [la1,la2] of latSteps) {
     for (const [lo1,lo2] of lonSteps) {
-      // toFixed(6) prevents scientific notation in coordinates
       const box=[la1,lo1,la2,lo2].map(n=>n.toFixed(6)).join(',');
-      const q=`[out:json][timeout:28];(`
+
+      // Signs query
+      const qSigns=`[out:json][timeout:28];(`
         +`node["highway"="stop"](${box});`
         +`node["highway"="traffic_signals"](${box});`
         +`node["highway"="give_way"](${box});`
         +`);out body;>;out skel qt;`;
+
+      // Roads query
+      const qRoads=`[out:json][timeout:28];`
+        +`way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential)$"](${box});`
+        +`out geom qt;`;
+
       try {
-        const res=await fetch('https://overpass-api.de/api/interpreter',{
-          method:'POST',
-          headers:{'Content-Type':'application/x-www-form-urlencoded'},
-          body:'data='+encodeURIComponent(q),
-        });
-        if (res.ok) {
-          const json = await res.json();
-          const parsed = parseOverpassNodes(json);
-          for (const n of parsed) all.set(n.id, n);
-        } else {
-          console.warn(`Chunk HTTP ${res.status}`);
+        const [rSigns, rRoads] = await Promise.all([
+          fetch('https://overpass-api.de/api/interpreter',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(qSigns)}),
+          fetch('https://overpass-api.de/api/interpreter',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(qRoads)}),
+        ]);
+        if (rSigns.ok) {
+          const json=await rSigns.json();
+          for (const n of parseOverpassNodes(json)) allNodes.set(n.id,n);
+        }
+        if (rRoads.ok) {
+          const json=await rRoads.json();
+          for (const el of (json.elements||[])) {
+            if (el.type==='way'&&el.geometry) {
+              allRoads.set(el.id, {
+                id:       el.id,
+                name:     el.tags?.name||el.tags?.highway||'road',
+                segments: el.geometry.slice(0,-1).map((pt,i)=>({
+                  lat1:pt.lat,lon1:pt.lon,
+                  lat2:el.geometry[i+1].lat,lon2:el.geometry[i+1].lon,
+                })),
+              });
+            }
+          }
         }
       } catch(e) {
         console.warn('Chunk failed:', e.message);
       }
       done++;
       onProgress(done/total);
-      setProgress(`${label} — chunk ${done}/${total} · ${all.size.toLocaleString()} signs so far`);
-      if (done<total) await sleep(350);
+      setProgress(`${label} — chunk ${done}/${total} · ${allNodes.size.toLocaleString()} signs · ${allRoads.size.toLocaleString()} road ways`);
+      if (done<total) await sleep(400);
     }
   }
-  return Array.from(all.values());
+  return {nodes: Array.from(allNodes.values()), roadWays: Array.from(allRoads.values())};
 }
 
 // ═══════════════════════════════════
 //  CACHE MANAGEMENT
 // ═══════════════════════════════════
 function renderRegionList() {
-  const el=document.getElementById('region-list');
-  if (!el) return;
-  if (!cachedRegions.length) {
-    el.innerHTML='<div style="font-size:12px;color:var(--muted)">No regions cached yet.</div>';
-    return;
+  // Signs list
+  const signEl = document.getElementById('region-list');
+  if (signEl) {
+    if (!cachedRegions.length) {
+      signEl.innerHTML='<div style="font-size:12px;color:var(--muted)">No sign data cached yet.</div>';
+    } else {
+      signEl.innerHTML = [...cachedRegions].sort((a,b)=>b.ts-a.ts).map(r => {
+        const kb   = r.sizeKB || estimateSizeKB(r.nodeCount||0);
+        const size = kb>1024 ? `${(kb/1024).toFixed(1)} MB` : `${kb} KB`;
+        return `<div class="region-item">
+          <div>
+            <div class="region-name">${r.label}</div>
+            <div class="region-meta">${(r.nodeCount||0).toLocaleString()} signs · ${size} · ${timeAgo(r.ts)}</div>
+          </div>
+          <button class="region-del" onclick="deleteRegion('${r.key}')">×</button>
+        </div>`;
+      }).join('');
+    }
   }
-  el.innerHTML=[...cachedRegions].sort((a,b)=>b.ts-a.ts).map(r=>{
-    const kb   = r.sizeKB || estimateSizeKB(r.nodeCount||0);
-    const size = kb>1024 ? `${(kb/1024).toFixed(1)}MB` : `${kb}KB`;
-    return `
-    <div class="region-item">
-      <div>
-        <div class="region-name">${r.label}</div>
-        <div class="region-meta">${(r.nodeCount||0).toLocaleString()} signs · ${size} · ${timeAgo(r.ts)}</div>
-      </div>
-      <button class="region-del" onclick="deleteRegion('${r.key}')">×</button>
-    </div>`;
-  }).join('');
+
+  // Roads list
+  const roadEl = document.getElementById('road-region-list');
+  if (roadEl) {
+    // Separate regional downloads from live tiles
+    const regional = cachedRoadRegions.filter(r => !r.key.startsWith('road-tile:'));
+    const tiles    = cachedRoadRegions.filter(r =>  r.key.startsWith('road-tile:'));
+    if (!cachedRoadRegions.length) {
+      roadEl.innerHTML='<div style="font-size:12px;color:var(--muted)">No road data cached yet.</div>';
+    } else {
+      const items = [];
+      for (const r of [...regional].sort((a,b)=>b.ts-a.ts)) {
+        const kb   = r.sizeKB || 0;
+        const size = kb>1024 ? `${(kb/1024).toFixed(1)} MB` : `${kb} KB`;
+        items.push(`<div class="region-item">
+          <div>
+            <div class="region-name">${r.label}</div>
+            <div class="region-meta">${(r.wayCount||0).toLocaleString()} road ways · ${size} · ${timeAgo(r.ts)}</div>
+          </div>
+          <button class="region-del" onclick="deleteRoadRegion('${r.key}')">×</button>
+        </div>`);
+      }
+      if (tiles.length) {
+        const tileKB = tiles.reduce((s,t)=>s+(t.sizeKB||0),0);
+        const newest = Math.max(...tiles.map(t=>t.ts));
+        items.push(`<div class="region-item">
+          <div>
+            <div class="region-name">Live tiles (${tiles.length})</div>
+            <div class="region-meta">${tiles.reduce((s,t)=>s+(t.wayCount||0),0).toLocaleString()} road ways · ${tileKB>1024?(tileKB/1024).toFixed(1)+' MB':tileKB+' KB'} · last ${timeAgo(newest)}</div>
+          </div>
+          <button class="region-del" onclick="clearRoadTiles()">×</button>
+        </div>`);
+      }
+      roadEl.innerHTML = items.join('');
+    }
+  }
 }
 
 async function deleteRegion(key) {
@@ -1413,22 +1699,59 @@ async function deleteRegion(key) {
   await idbDelete('regions',key).catch(()=>{});
   cachedRegions=cachedRegions.filter(r=>r.key!==key);
   renderRegionList();
+  renderCacheSummary();
   updateStatusPanel();
+}
+
+async function deleteRoadRegion(key) {
+  if (!db) return;
+  await idbDelete('road-regions',key).catch(()=>{});
+  cachedRoadRegions=cachedRoadRegions.filter(r=>r.key!==key);
+  renderRegionList();
+  renderCacheSummary();
+}
+
+async function clearRoadTiles() {
+  if (!db) return;
+  const tiles = cachedRoadRegions.filter(r=>r.key.startsWith('road-tile:'));
+  for (const t of tiles) await idbDelete('road-regions',t.key).catch(()=>{});
+  cachedRoadRegions = cachedRoadRegions.filter(r=>!r.key.startsWith('road-tile:'));
+  renderRegionList();
+  renderCacheSummary();
+}
+
+function renderCacheSummary() {
+  const totalSignNodes = cachedRegions.reduce((s,r)=>s+(r.nodeCount||0), 0);
+  const totalSignKB    = cachedRegions.reduce((s,r)=>s+(r.sizeKB||estimateSizeKB(r.nodeCount||0)), 0);
+  const totalRoadWays  = cachedRoadRegions.reduce((s,r)=>s+(r.wayCount||0), 0);
+  const totalRoadKB    = cachedRoadRegions.reduce((s,r)=>s+(r.sizeKB||0), 0);
+  const totalKB        = totalSignKB + totalRoadKB;
+  const totalStr       = totalKB > 1024 ? `${(totalKB/1024).toFixed(1)} MB` : `${totalKB} KB`;
+
+  const el = document.getElementById('st-regions');
+  if (el) el.textContent =
+    `${cachedRegions.length} sign region${cachedRegions.length!==1?'s':''}`
+    + (totalSignNodes ? ` · ${totalSignNodes.toLocaleString()} signs` : '')
+    + ` · ${cachedRoadRegions.length} road region${cachedRoadRegions.length!==1?'s':''}`
+    + (totalRoadWays ? ` · ${totalRoadWays.toLocaleString()} ways` : '')
+    + (totalKB ? ` · ${totalStr} total` : '')
+    + (urbanMode===null?' · detecting…' : urbanMode?' · urban 2.5mi' : ' · rural 5mi');
 }
 
 async function clearAllCache() {
   if (!confirm('Clear all downloaded map data?')) return;
   await idbClear('nodes').catch(()=>{});
   await idbClear('regions').catch(()=>{});
-  cachedRegions=[]; osmNodes=[];
-  urbanMode=null;       // reset so next GPS update re-probes
-  lastQueryPos=null;    // force immediate re-fetch
+  await idbClear('roads').catch(()=>{});
+  await idbClear('road-regions').catch(()=>{});
+  cachedRegions=[]; cachedRoadRegions=[]; osmNodes=[]; roads=[];
+  currentWayId=null; lastRoadQueryPos=null;
+  urbanMode=null; lastQueryPos=null;
   renderRegionList();
   renderCacheSummary();
   updateStatusPanel();
   setStatus('osm','','No cache — will auto-fetch on GPS');
-  // Trigger a fresh live fetch if we have GPS
-  if (gpsPos && mapEnabled) fetchOSMNodes(gpsPos.lat, gpsPos.lon);
+  if (gpsPos && mapEnabled) { fetchOSMNodes(gpsPos.lat, gpsPos.lon); fetchRoads(gpsPos.lat, gpsPos.lon); }
 }
 
 function setProgress(msg) { document.getElementById('dl-progress').textContent=msg; }
@@ -1444,17 +1767,6 @@ function estimateSizeKB(nodes) {
   return Math.round(nodes * 160 / 1024);
 }
 
-function renderCacheSummary() {
-  const totalNodes   = cachedRegions.reduce((s,r)=>s+(r.nodeCount||0), 0);
-  const totalSizeKB  = cachedRegions.reduce((s,r)=>s+(r.sizeKB||estimateSizeKB(r.nodeCount||0)), 0);
-  const sizeStr      = totalSizeKB > 1024
-    ? `${(totalSizeKB/1024).toFixed(1)} MB`
-    : `${totalSizeKB} KB`;
-  const el = document.getElementById('st-regions');
-  if (el) el.textContent = `${cachedRegions.length} region${cachedRegions.length!==1?'s':''}`
-    + (totalNodes ? ` · ${totalNodes.toLocaleString()} signs · ${sizeStr}` : '')
-    + (urbanMode===null?' · detecting…' : urbanMode?' · urban 2.5mi' : ' · rural 5mi');
-}
 
 // ═══════════════════════════════════
 //  UI CONTROLS
@@ -1481,12 +1793,16 @@ function togglePanel() {
   panelEl.classList.toggle('open',panelOpen);
   document.getElementById('panel-backdrop').style.display = panelOpen ? 'block' : 'none';
   if (panelOpen) updateStatusPanel();
+  if (!panelOpen && mapAnimFrame) { clearTimeout(mapAnimFrame); mapAnimFrame=null; }
 }
 
 function switchTab(tab) {
   activeTab=tab;
   document.querySelectorAll('.ptab').forEach(el=>{
-    el.classList.toggle('active', el.textContent.toLowerCase().replace(/\s/g,'')===(tab==='camera'?'camera':tab==='cache'?'mapcache':'status'));
+    const t = el.textContent.toLowerCase().replace(/\s/g,'');
+    el.classList.toggle('active',
+      t===tab || (tab==='map' && t==='livemap') || (tab==='cache' && t==='mapcache')
+    );
   });
   document.querySelectorAll('.tab-pane').forEach(el=>
     el.classList.toggle('active', el.id===`tab-${tab}`)
@@ -1494,6 +1810,181 @@ function switchTab(tab) {
   if (tab==='status') updateStatusPanel();
   if (tab==='cache')  renderRegionList();
   if (tab==='camera') renderLensGrid();
+  if (tab==='map')    drawLiveMap();
+}
+
+// ═══════════════════════════════════
+//  LIVE MAP VISUALIZATION
+// ═══════════════════════════════════
+let mapAnimFrame = null;
+
+function drawLiveMap() {
+  const canvas = document.getElementById('live-map');
+  if (!canvas) return;
+  const mc = canvas.getContext('2d');
+  const W  = canvas.width;
+  const H  = canvas.height;
+  mc.clearRect(0,0,W,H);
+
+  // Background
+  mc.fillStyle = '#111';
+  mc.fillRect(0,0,W,H);
+
+  if (!gpsPos) {
+    mc.fillStyle = 'rgba(255,255,255,0.3)';
+    mc.font = '13px -apple-system,sans-serif';
+    mc.textAlign = 'center';
+    mc.fillText('Waiting for GPS…', W/2, H/2);
+    return;
+  }
+
+  const {lat, lon, heading} = gpsPos;
+
+  // Scale: show 2500ft radius — find max alert distance for dynamic scale
+  const maxDist = Math.max(500, ...activeAlerts.map(a=>a.distFt), 500);
+  const scaleFt = Math.min(maxDist * 1.3, CFG.ALERT_MAX_FT);
+  const ftToPx  = (W/2 - 20) / scaleFt;
+
+  // Grid circles
+  mc.strokeStyle = 'rgba(255,255,255,0.06)';
+  mc.lineWidth = 0.5;
+  for (const ring of [500,1000,2000,5000]) {
+    if (ring > scaleFt) continue;
+    const r = ring * ftToPx;
+    mc.beginPath(); mc.arc(W/2,H/2,r,0,Math.PI*2); mc.stroke();
+    mc.fillStyle = 'rgba(255,255,255,0.2)';
+    mc.font = '8px -apple-system,sans-serif';
+    mc.textAlign = 'left';
+    mc.fillText(`${ring}ft`, W/2+4, H/2-r+10);
+  }
+
+  // North line
+  mc.strokeStyle = 'rgba(255,255,255,0.1)';
+  mc.setLineDash([3,3]);
+  mc.beginPath(); mc.moveTo(W/2,20); mc.lineTo(W/2,H-20); mc.stroke();
+  mc.beginPath(); mc.moveTo(20,H/2); mc.lineTo(W-20,H/2); mc.stroke();
+  mc.setLineDash([]);
+  mc.fillStyle = 'rgba(255,255,255,0.2)';
+  mc.font = '9px -apple-system,sans-serif';
+  mc.textAlign = 'center';
+  mc.fillText('N', W/2, 16);
+
+  // Classify every in-range node into one of four states:
+  // WILL_FIRE   — in activeAlerts, distance decreasing, alert will trigger
+  // SEEDED      — in nodePrevDist but not active yet (first-sight, needs 2nd confirm)
+  // SUPPRESSED  — in nodePrevDist, distance growing, filtered out
+  // OUT_OF_CONE — in range but outside heading cone or way-bearing filter
+  const activeIds    = new Set(activeAlerts.map(a=>a.nodeId));
+  const seededIds    = new Set(Object.keys(nodePrevDist).map(Number));
+
+  for (const node of osmNodes) {
+    const distFt = haversineM(lat, lon, node.lat, node.lon) / CFG.M_PER_FT;
+    if (distFt > scaleFt * 1.1) continue;
+
+    const brg  = bearingDeg(lat,lon,node.lat,node.lon) * Math.PI/180;
+    const distM= haversineM(lat,lon,node.lat,node.lon);
+    const px   = W/2 + Math.sin(brg) * distM / CFG.M_PER_FT * ftToPx;
+    const py   = H/2 - Math.cos(brg) * distM / CFG.M_PER_FT * ftToPx;
+
+    const isActive     = activeIds.has(node.id);
+    const isSeeded     = !isActive && seededIds.has(node.id);
+    // Suppressed = was seeded, distance now growing
+    const prevD        = nodePrevDist[node.id];
+    const isSuppressed = isSeeded && prevD !== undefined &&
+      haversineM(lat,lon,node.lat,node.lon)/CFG.M_PER_FT > prevD + 20;
+
+    let color, radius, label;
+
+    if (isActive) {
+      // GREEN — will fire an alert
+      color  = node.type==='signal' ? '#4CAF50' : '#4CAF50';
+      radius = 9;
+      label  = `${Math.round(distFt)}ft`;
+    } else if (isSuppressed) {
+      // RED/ORANGE — actively suppressed (distance growing = wrong road)
+      color  = '#E24B4A';
+      radius = 6;
+      label  = null;
+    } else if (isSeeded) {
+      // AMBER — seeded, watching, not yet confirmed as approach
+      color  = '#EF9F27';
+      radius = 6;
+      label  = null;
+    } else {
+      // GRAY — in range but outside cone/way-bearing filter, not being tracked
+      color  = node.type==='signal' ? 'rgba(100,180,255,0.25)' : 'rgba(255,255,255,0.18)';
+      radius = 4;
+      label  = null;
+    }
+
+    // Draw node
+    mc.fillStyle = color;
+    mc.beginPath();
+    mc.arc(px, py, radius, 0, Math.PI*2);
+    mc.fill();
+
+    // Ring on active nodes
+    if (isActive) {
+      mc.strokeStyle = color;
+      mc.lineWidth   = 1.5;
+      mc.globalAlpha = 0.4;
+      mc.beginPath();
+      mc.arc(px, py, radius+5, 0, Math.PI*2);
+      mc.stroke();
+      mc.globalAlpha = 1;
+    }
+
+    // Type indicator — small icon inside dot
+    mc.fillStyle = '#000';
+    mc.font = `bold ${radius-1}px -apple-system,sans-serif`;
+    mc.textAlign = 'center';
+    mc.fillText(node.type==='signal' ? '●' : '■', px, py+3);
+
+    // Distance label
+    if (label) {
+      mc.fillStyle = '#fff';
+      mc.font = 'bold 9px -apple-system,sans-serif';
+      mc.textAlign = 'center';
+      mc.fillText(label, px, py - radius - 4);
+    }
+  }
+
+  // Heading cone
+  if (heading != null) {
+    const coneAngle = CFG.HEADING_CONE_DEG * Math.PI/180;
+    const coneLen   = (W/2) * 0.85;
+    const hdgR      = (heading - 90) * Math.PI/180;
+    mc.fillStyle = 'rgba(55,138,221,0.08)';
+    mc.beginPath();
+    mc.moveTo(W/2, H/2);
+    mc.arc(W/2, H/2, coneLen, hdgR - coneAngle, hdgR + coneAngle);
+    mc.closePath();
+    mc.fill();
+    // Heading arrow
+    mc.strokeStyle = 'rgba(55,138,221,0.6)';
+    mc.lineWidth = 1.5;
+    mc.beginPath();
+    mc.moveTo(W/2, H/2);
+    mc.lineTo(W/2 + Math.cos(hdgR)*40, H/2 + Math.sin(hdgR)*40);
+    mc.stroke();
+  }
+
+  // Vehicle dot (centre)
+  mc.fillStyle = '#378ADD';
+  mc.beginPath(); mc.arc(W/2,H/2,8,0,Math.PI*2); mc.fill();
+  mc.fillStyle = '#fff';
+  mc.beginPath(); mc.arc(W/2,H/2,3,0,Math.PI*2); mc.fill();
+
+  const currentRoad = roads.find(r=>r.id===currentWayId);
+  const roadName    = currentRoad ? currentRoad.name : (roads.length ? 'no snap' : 'no roads');
+  const scaleLabel  = scaleFt >= 1000 ? `${(scaleFt/5280).toFixed(1)} mi` : `${Math.round(scaleFt)} ft`;
+  document.getElementById('map-scale').textContent =
+    `Scale: ${scaleLabel} · Road: ${roadName} · ${osmNodes.length} nodes`;
+
+  // Auto-refresh when tab is open
+  if (activeTab === 'map') {
+    mapAnimFrame = setTimeout(drawLiveMap, 1000);
+  }
 }
 
 function tapSpeed() {
