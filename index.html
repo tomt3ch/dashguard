@@ -1053,13 +1053,16 @@ function classifyDensity(lat, lon, nodeCount, radiusM) {
 }
 
 async function runOverpassQuery(lat, lon, radiusM, timeout) {
-  // Use 'out geom' instead of 'out skel qt' so way geometry (lat/lon per node)
-  // is returned inline — this guarantees we can compute wayFwdBrg for every sign node
+  // Two-part query:
+  // 1. Get the sign nodes
+  // 2. Get the ways that contain those nodes WITH full geometry (out geom)
+  // We use 'wr' (way recurse) to get parent ways, then 'out geom' for their geometry
   const q = `[out:json][timeout:${timeout}];(`
     + `node["highway"="stop"](around:${radiusM},${lat},${lon});`
     + `node["highway"="traffic_signals"](around:${radiusM},${lat},${lon});`
     + `node["highway"="give_way"](around:${radiusM},${lat},${lon});`
-    + `);out body;>;out geom qt;`;
+    + `);out body;`           // get sign nodes with all tags
+    + `way(bn);out geom qt;`; // get parent ways WITH inline geometry
   try {
     const res  = await fetch('https://overpass-api.de/api/interpreter', {
       method:  'POST',
@@ -1219,12 +1222,12 @@ function distToSegmentM(plat, plon, lat1, lon1, lat2, lon2) {
 }
 
 function parseOverpassNodes(json) {
-  const nodeCoords  = {};
-  const nodeWayId   = {};
-  const nodeWayBrgs = {};
+  const nodeCoords    = {};
+  const nodeWayId     = {};
+  const nodeWayBrgs   = {};
   const nodeWayFwdBrg = {};
 
-  // Build coord map from all nodes in response
+  // Build coord map from sign nodes
   for (const el of json.elements) {
     if (el.type === 'node') nodeCoords[el.id] = {lat:el.lat, lon:el.lon};
   }
@@ -1232,43 +1235,31 @@ function parseOverpassNodes(json) {
   for (const el of json.elements) {
     if (el.type !== 'way') continue;
 
-    // 'out geom qt' returns geometry inline as el.geometry array [{lat,lon},...]
-    // 'out skel qt' returns only node IDs — we prefer geom for reliable bearing
-    let coords = null;
-    if (el.geometry && el.geometry.length >= 2) {
-      // Inline geometry — most reliable
-      coords = el.geometry;
-    } else if (el.nodes && el.nodes.length >= 2) {
-      // Fall back to node ID lookup
-      const pts = el.nodes.map(id => nodeCoords[id]).filter(Boolean);
-      if (pts.length >= 2) coords = pts;
-    }
+    // way(bn);out geom qt returns BOTH el.nodes (ID array) AND el.geometry (coord array)
+    // Use geometry for bearing, nodes for member ID assignment
+    const geom    = el.geometry; // [{lat,lon},...] — inline coords
+    const members = el.nodes;    // [nodeId,...] — member IDs
 
-    if (!coords || coords.length < 2) continue;
+    if (!geom || geom.length < 2) continue;
 
-    // Use first segment for forward bearing
-    const a = coords[0], b = coords[1];
-    const brg = bearingDeg(a.lat, a.lon, b.lat, b.lon);
+    // Forward bearing = direction of first segment of way as drawn in OSM
+    const brg = bearingDeg(geom[0].lat, geom[0].lon, geom[1].lat, geom[1].lon);
 
-    // Assign to all member node IDs
-    const nodeIds = el.nodes || el.geometry?.map((_,i) => i); // fallback index if no node IDs
-    const memberIds = el.nodes || [];
-
-    for (const nid of memberIds) {
-      if (!nodeWayId[nid])     nodeWayId[nid]    = el.id;
-      if (!nodeWayFwdBrg[nid]) nodeWayFwdBrg[nid] = brg;
-      if (!nodeWayBrgs[nid])   nodeWayBrgs[nid]  = [];
-      nodeWayBrgs[nid].push(brg);
-      nodeWayBrgs[nid].push((brg + 180) % 360);
-    }
-
-    // Also assign to geometry coords that match sign node positions
-    // (handles case where way uses geometry but no node ID list)
-    if (!el.nodes && el.geometry) {
-      for (const pt of el.geometry) {
-        // Find sign nodes at this location
+    if (members && members.length > 0) {
+      // Assign wayId and bearing to all member nodes
+      for (const nid of members) {
+        if (!nodeWayId[nid])     nodeWayId[nid]     = el.id;
+        if (!nodeWayFwdBrg[nid]) nodeWayFwdBrg[nid] = brg;
+        if (!nodeWayBrgs[nid])   nodeWayBrgs[nid]   = [];
+        nodeWayBrgs[nid].push(brg);
+        nodeWayBrgs[nid].push((brg + 180) % 360);
+      }
+    } else {
+      // No node IDs — match by coordinate position
+      for (const pt of geom) {
         for (const [nid, coord] of Object.entries(nodeCoords)) {
-          if (Math.abs(coord.lat - pt.lat) < 0.000001 && Math.abs(coord.lon - pt.lon) < 0.000001) {
+          if (Math.abs(coord.lat - pt.lat) < 0.000001 &&
+              Math.abs(coord.lon - pt.lon) < 0.000001) {
             if (!nodeWayId[nid])     nodeWayId[nid]     = el.id;
             if (!nodeWayFwdBrg[nid]) nodeWayFwdBrg[nid] = brg;
           }
@@ -1721,7 +1712,7 @@ async function downloadBBox(bbox, label, onProgress) {
         +`node["highway"="stop"](${box});`
         +`node["highway"="traffic_signals"](${box});`
         +`node["highway"="give_way"](${box});`
-        +`);out body;>;out geom qt;`;
+        +`);out body;way(bn);out geom qt;`;
 
       // Roads query
       const qRoads=`[out:json][timeout:28];`
