@@ -487,6 +487,7 @@ async function loadCachedRegions() {
     }
   }
   renderRegionList();
+  renderCacheSummary();
   updateStatusPanel();
 }
 
@@ -499,11 +500,12 @@ async function loadNodesFromDB(lat, lon, radiusM) {
 async function saveRegion(key, label, nodes, bbox) {
   if (!db) return;
   await idbPutAll('nodes', nodes);
-  const rec = {key, label, nodeCount:nodes.length, ts:Date.now(), bbox};
+  const rec = {key, label, nodeCount:nodes.length, sizeKB:estimateSizeKB(nodes.length), ts:Date.now(), bbox};
   await idbPutAll('regions', [rec]);
   cachedRegions = cachedRegions.filter(r => r.key !== key);
   cachedRegions.push(rec);
   renderRegionList();
+  renderCacheSummary();
   updateStatusPanel();
 }
 
@@ -1271,13 +1273,12 @@ async function downloadRegion() {
     const key=`region:${label.toLowerCase().replace(/[\s,]+/g,'-')}`;
     await saveRegion(key, label, nodes, bbox);
 
-    // Refresh live nodes if we're in this region
-    if (gpsPos&&hasCachedCoverage(gpsPos.lat,gpsPos.lon)) {
-      osmNodes=await loadNodesFromDB(gpsPos.lat,gpsPos.lon,CFG.OSM_RADIUS_M);
-      osmFetchedAt=Date.now();
-      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
-      evaluateMapAlerts();
-    }
+    // Load ALL cached nodes into memory and reclassify
+    osmNodes = await idbGetAll('nodes').catch(()=>[]);
+    osmFetchedAt = Date.now();
+    if (gpsPos) classifyDensity(gpsPos.lat, gpsPos.lon);
+    setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
+    if (gpsPos) evaluateMapAlerts();
 
     setProgBar(100);
     setProgress(`✓ Saved ${nodes.length.toLocaleString()} signs for ${label}`);
@@ -1320,14 +1321,16 @@ async function downloadRadius(km) {
       return;
     }
     await saveRegion(key, label, nodes, bbox);
-    if (gpsPos) {
-      osmNodes=await loadNodesFromDB(gpsPos.lat,gpsPos.lon,CFG.OSM_RADIUS_M);
-      osmFetchedAt=Date.now();
-      setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
-      evaluateMapAlerts();
-    }
+    // Load ALL cached nodes into memory (not just a radius slice)
+    osmNodes = await idbGetAll('nodes').catch(()=>[]);
+    osmFetchedAt = Date.now();
+    // Classify density from new data
+    classifyDensity(lat, lon);
+    setStatus('osm','ok',`OSM: ${osmNodes.length} (cache)`);
+    evaluateMapAlerts();
     setProgBar(100);
     setProgress(`✓ ${nodes.length.toLocaleString()} signs saved for ${label}`);
+    renderCacheSummary();
   } catch(e) {
     setProgress(`Error: ${e.message}`);
     console.error('downloadRadius:', e);
@@ -1391,14 +1394,18 @@ function renderRegionList() {
     el.innerHTML='<div style="font-size:12px;color:var(--muted)">No regions cached yet.</div>';
     return;
   }
-  el.innerHTML=[...cachedRegions].sort((a,b)=>b.ts-a.ts).map(r=>`
+  el.innerHTML=[...cachedRegions].sort((a,b)=>b.ts-a.ts).map(r=>{
+    const kb   = r.sizeKB || estimateSizeKB(r.nodeCount||0);
+    const size = kb>1024 ? `${(kb/1024).toFixed(1)}MB` : `${kb}KB`;
+    return `
     <div class="region-item">
       <div>
         <div class="region-name">${r.label}</div>
-        <div class="region-meta">${(r.nodeCount||0).toLocaleString()} signs · ${timeAgo(r.ts)}</div>
+        <div class="region-meta">${(r.nodeCount||0).toLocaleString()} signs · ${size} · ${timeAgo(r.ts)}</div>
       </div>
       <button class="region-del" onclick="deleteRegion('${r.key}')">×</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 async function deleteRegion(key) {
@@ -1414,9 +1421,14 @@ async function clearAllCache() {
   await idbClear('nodes').catch(()=>{});
   await idbClear('regions').catch(()=>{});
   cachedRegions=[]; osmNodes=[];
+  urbanMode=null;       // reset so next GPS update re-probes
+  lastQueryPos=null;    // force immediate re-fetch
   renderRegionList();
+  renderCacheSummary();
   updateStatusPanel();
-  setStatus('osm','warn','Cache cleared');
+  setStatus('osm','','No cache — will auto-fetch on GPS');
+  // Trigger a fresh live fetch if we have GPS
+  if (gpsPos && mapEnabled) fetchOSMNodes(gpsPos.lat, gpsPos.lon);
 }
 
 function setProgress(msg) { document.getElementById('dl-progress').textContent=msg; }
@@ -1425,6 +1437,23 @@ function setProgBar(pct) {
   const fill=document.getElementById('prog-fill');
   bar.classList.toggle('show', pct>0&&pct<100);
   fill.style.width=Math.round(pct)+'%';
+}
+
+function estimateSizeKB(nodes) {
+  // Each node: ~80 bytes for id/lat/lon/type + ~40 bytes per wayBearing entry avg 2 bearings
+  return Math.round(nodes * 160 / 1024);
+}
+
+function renderCacheSummary() {
+  const totalNodes   = cachedRegions.reduce((s,r)=>s+(r.nodeCount||0), 0);
+  const totalSizeKB  = cachedRegions.reduce((s,r)=>s+(r.sizeKB||estimateSizeKB(r.nodeCount||0)), 0);
+  const sizeStr      = totalSizeKB > 1024
+    ? `${(totalSizeKB/1024).toFixed(1)} MB`
+    : `${totalSizeKB} KB`;
+  const el = document.getElementById('st-regions');
+  if (el) el.textContent = `${cachedRegions.length} region${cachedRegions.length!==1?'s':''}`
+    + (totalNodes ? ` · ${totalNodes.toLocaleString()} signs · ${sizeStr}` : '')
+    + (urbanMode===null?' · detecting…' : urbanMode?' · urban 2.5mi' : ' · rural 5mi');
 }
 
 // ═══════════════════════════════════
@@ -1487,8 +1516,7 @@ function updateStatusPanel() {
   document.getElementById('st-hsrc').textContent    = gpsPos?.headingSrc||'none';
   document.getElementById('st-nodes').textContent   = osmNodes.length + (osmNodes.length===0?' ⚠ no data':'');
   document.getElementById('st-age').textContent     = osmFetchedAt?`${Math.round((Date.now()-osmFetchedAt)/1000)}s ago`:'–';
-  document.getElementById('st-regions').textContent = cachedRegions.length
-    + (urbanMode===null?' (detecting…)' : urbanMode?' · urban 2.5mi' : ' · rural 5mi');
+  renderCacheSummary();
 }
 
 // ═══════════════════════════════════
