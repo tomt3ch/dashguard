@@ -283,7 +283,7 @@
         <button class="action-btn" id="btn-log-copy" onclick="copyLog()" style="flex:1;opacity:0.4;" disabled>📋 Copy log</button>
       </div>
       <div style="margin-top:14px;font-size:10px;color:var(--muted2);text-align:center;line-height:1.6;">
-        DashGuard v34b · DB v4
+        DashGuard v34c · DB v4
       </div>
     </div>
 
@@ -1683,13 +1683,27 @@ function triggerVoiceAlerts(alerts) {
     if (a.type === 'signal' && a.distFt < 50) continue;
     if (a.type === 'blinker' && a.distFt < 100) continue;
 
+    // Suppress blinker if already within 150ft of an active stop sign —
+    // driver is committed to stopping, intersection warning is redundant
+    if (a.type === 'blinker') {
+      const nearStop = alerts.some(x => x.type === 'stop' && x.distFt <= 150);
+      if (nearStop) continue;
+    }
+
     // Camera-only alerts: "stop sign ahead" max 2 times per detection session
     if (a.unmapped) {
+      // Don't fire camera stop alert if map already said "do not roll through"
+      if (a.type === 'stop') {
+        const anyFinalFired = alerts
+          .filter(x => x.type === 'stop' && x.nodeId)
+          .some(x => lastSpoken[`final-${x.nodeId}`]);
+        if (anyFinalFired) continue;
+      }
       const camKey   = `cam-only-${a.type}`;
       const camCount = `cam-count-${a.type}`;
       const now = Date.now();
       if (lastSpoken[camKey] && now - lastSpoken[camKey] < 8000) continue;
-      if ((lastSpoken[camCount] || 0) >= 2) continue; // max 2 per session
+      if ((lastSpoken[camCount] || 0) >= 2) continue;
       lastSpoken[camKey]   = now;
       lastSpoken[camCount] = (lastSpoken[camCount] || 0) + 1;
       const phrase = a.type === 'stop' ? 'Stop sign ahead.' : 'Traffic signal ahead.';
@@ -2445,7 +2459,7 @@ function startLog() {
   logActive  = true;
   logEntries = [];
   const startTime = new Date().toTimeString().slice(0,8);
-  logEntries.push(`=== DashGuard v32 DB v4 — Log started ${startTime} ===`);
+  logEntries.push(`=== DashGuard v34c DB v4 — Log started ${startTime} ===`);
   logEntries.push(`GPS: ${gpsPos ? `${gpsPos.lat.toFixed(5)},${gpsPos.lon.toFixed(5)} hdg=${Math.round(gpsPos.heading||0)}° spd=${Math.round(gpsPos.speedMph)}mph` : 'no lock'}`);
   logEntries.push(`Nodes: ${osmNodes.length} total, ${osmNodes.filter(n=>n.wayId).length} w/wayId, ${osmNodes.filter(n=>n.direction).length} w/direction`);
   logEntries.push(`Roads: ${roads.length} ways loaded, currentWayId=${currentWayId||'null'}`);
